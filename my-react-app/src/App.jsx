@@ -5,55 +5,28 @@ import "./App.css";
 const API_URL = "http://127.0.0.1:8000";
 
 const GRADE_META = {
-  Premium: {
-    tone: "gold",
-    label: "Premium",
-    summary: "Top-grade grains with strong uniformity and visual quality.",
-  },
-  "Well-Milled": {
-    tone: "green",
-    label: "Well milled",
-    summary: "Cleanly milled grains with good consistency.",
-  },
-  "Regular-Milled": {
-    tone: "blue",
-    label: "Regular milled",
-    summary: "Acceptable milling quality with visible variation.",
-  },
-  "Poor-Quality-Rice-Mix": {
-    tone: "red",
-    label: "Poor quality mix",
-    summary: "Mixed or low-quality grains that need review.",
-  },
+  Premium: { tone: "gold", label: "Premium", summary: "Top-grade grains with strong uniformity and visual quality." },
+  "Well-Milled": { tone: "green", label: "Well milled", summary: "Cleanly milled grains with good consistency." },
+  "Regular-Milled": { tone: "blue", label: "Regular milled", summary: "Acceptable milling quality with visible variation." },
+  "Poor-Quality-Rice-Mix": { tone: "red", label: "Poor quality mix", summary: "Mixed or low-quality grains that need review." },
 };
 
-function Icon({ name }) {
-  const icons = {
-    upload: (
-      <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 20h14" />
-    ),
-    camera: (
-      <path d="M6 8h1.8L9.5 6h5L16.2 8H18a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Zm6 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />
-    ),
-    close: <path d="m7 7 10 10M17 7 7 17" />,
-    refresh: (
-      <path d="M20 7v5h-5M4 17v-5h5M18.1 9A7 7 0 0 0 6.3 6.6L4 9m2 6a7 7 0 0 0 11.8 2.4L20 15" />
-    ),
-    scan: (
-      <path d="M7 4H5a1 1 0 0 0-1 1v2m13-3h2a1 1 0 0 1 1 1v2M7 20H5a1 1 0 0 1-1-1v-2m13 3h2a1 1 0 0 0 1-1v-2M7 12h10" />
-    ),
-    alert: (
-      <path d="M12 8v5m0 4h.01M10.3 4.3 2.7 17.5A1 1 0 0 0 3.6 19h16.8a1 1 0 0 0 .9-1.5L13.7 4.3a2 2 0 0 0-3.4 0Z" />
-    ),
-    timer: <path d="M12 8v5l3 2M9 2h6M12 22a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z" />,
-  };
+// Icon paths live outside the component so they are not rebuilt on every render.
+const ICON_PATHS = {
+  upload: "M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 20h14",
+  camera: "M6 8h1.8L9.5 6h5L16.2 8H18a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Zm6 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
+  close: "m7 7 10 10M17 7 7 17",
+  refresh: "M20 7v5h-5M4 17v-5h5M18.1 9A7 7 0 0 0 6.3 6.6L4 9m2 6a7 7 0 0 0 11.8 2.4L20 15",
+  scan: "M7 4H5a1 1 0 0 0-1 1v2m13-3h2a1 1 0 0 1 1 1v2M7 20H5a1 1 0 0 1-1-1v-2m13 3h2a1 1 0 0 0 1-1v-2M7 12h10",
+  alert: "M12 8v5m0 4h.01M10.3 4.3 2.7 17.5A1 1 0 0 0 3.6 19h16.8a1 1 0 0 0 .9-1.5L13.7 4.3a2 2 0 0 0-3.4 0Z",
+  timer: "M12 8v5l3 2M9 2h6M12 22a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z",
+};
 
-  return (
-    <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
-      {icons[name]}
-    </svg>
-  );
-}
+const Icon = ({ name }) => (
+  <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
+    <path d={ICON_PATHS[name]} />
+  </svg>
+);
 
 function App() {
   const [file, setFile] = useState(null);
@@ -73,11 +46,8 @@ function App() {
   const handleDrop = (event) => {
     event.preventDefault();
     setDragging(false);
-
-    const droppedFile = event.dataTransfer.files[0];
-    if (droppedFile?.type.startsWith("image/")) {
-      processFile(droppedFile);
-    }
+    const dropped = event.dataTransfer.files[0];
+    if (dropped?.type.startsWith("image/")) processFile(dropped);
   };
 
   const handlePredict = async () => {
@@ -89,12 +59,8 @@ function App() {
     setResult(null);
 
     try {
-      const response = await fetch(`${API_URL}/predict`, {
-        method: "POST",
-        body: formData,
-      });
-      const data = await response.json();
-      setResult(data);
+      const response = await fetch(`${API_URL}/predict`, { method: "POST", body: formData });
+      setResult(await response.json());
     } catch (error) {
       console.error("Prediction error:", error);
       setResult({ error: "Prediction failed. Make sure the backend is running." });
@@ -111,14 +77,9 @@ function App() {
   };
 
   const grade = result?.predicted_grade;
-  const gradeMeta = GRADE_META[grade] || {
-    tone: "neutral",
-    label: grade,
-    summary: "Classification completed.",
-  };
+  const meta = GRADE_META[grade] || { tone: "neutral", label: grade, summary: "Classification completed." };
   const confidence = result?.confidence ? parseFloat(result.confidence) : 0;
-  const confidenceTone =
-    confidence >= 80 ? "good" : confidence >= 50 ? "warning" : "danger";
+  const confidenceTone = confidence >= 80 ? "good" : confidence >= 50 ? "warning" : "danger";
 
   return (
     <main className="app-shell">
@@ -154,9 +115,7 @@ function App() {
 
           <button
             type="button"
-            className={`upload-zone ${dragging ? "is-dragging" : ""} ${
-              preview ? "has-preview" : ""
-            }`}
+            className={`upload-zone ${dragging ? "is-dragging" : ""} ${preview ? "has-preview" : ""}`}
             onClick={() => !preview && inputRef.current?.click()}
             onDrop={handleDrop}
             onDragOver={(event) => {
@@ -252,10 +211,10 @@ function App() {
 
           {result && !result.error && (
             <div className="result-stack">
-              <div className={`grade-card tone-${gradeMeta.tone}`}>
+              <div className={`grade-card tone-${meta.tone}`}>
                 <span className="grade-kicker">Predicted Grade</span>
-                <strong>{gradeMeta.label}</strong>
-                <p>{gradeMeta.summary}</p>
+                <strong>{meta.label}</strong>
+                <p>{meta.summary}</p>
               </div>
 
               <div className="metric-block">

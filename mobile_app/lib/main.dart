@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 
+import 'app_colors.dart';
+import 'screens/about_screen.dart';
+import 'screens/guide_screen.dart';
+import 'screens/history_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/scan_screen.dart';
-import 'screens/history_screen.dart';
-import 'screens/guide_screen.dart';
-import 'screens/dashboard_screen.dart';
-import 'screens/about_screen.dart';
 
 void main() {
   runApp(const RiceGraderApp());
@@ -19,67 +19,97 @@ class RiceGraderApp extends StatelessWidget {
     return MaterialApp(
       title: 'Rice Grade Classification',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF256D4F),
-          brightness: Brightness.light,
-        ),
-        scaffoldBackgroundColor: const Color(0xFFF7F8F6),
-        appBarTheme: const AppBarTheme(
-          elevation: 0,
-          scrolledUnderElevation: 0,
-          backgroundColor: Color(0xFFF7F8F6),
-          foregroundColor: Color(0xFF1E2722),
-          centerTitle: false,
-        ),
-        navigationBarTheme: NavigationBarThemeData(
-          backgroundColor: Colors.white,
-          indicatorColor: const Color(0xFFDDEFE6),
-          labelTextStyle: WidgetStateProperty.resolveWith(
-            (states) => TextStyle(
-              fontSize: 12,
-              fontWeight: states.contains(WidgetState.selected)
-                  ? FontWeight.w800
-                  : FontWeight.w500,
-            ),
-          ),
-        ),
-        filledButtonTheme: FilledButtonThemeData(
-          style: FilledButton.styleFrom(
-            minimumSize: const Size(0, 48),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-          ),
-        ),
-        outlinedButtonTheme: OutlinedButtonThemeData(
-          style: OutlinedButton.styleFrom(
-            minimumSize: const Size(0, 48),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-          ),
-        ),
-        cardTheme: CardThemeData(
-          elevation: 0,
-          color: Colors.white,
-          surfaceTintColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-            side: const BorderSide(color: Color(0xFFE0E5DF)),
-          ),
-        ),
-      ),
+      initialRoute: '/',
+      // Every path here must also exist in appRoutes (widgets/app_scaffold.dart)
+      // if it is meant to appear as a tab.
       routes: {
-        "/": (context) => const HomeScreen(),
-        "/scan": (context) => const ScanScreen(),
-        "/history": (context) => const HistoryScreen(),
-        "/guide": (context) => const GuideScreen(),
-        "/dashboard": (context) => const DashboardScreen(),
-        "/about": (context) => const AboutScreen(),
+        '/': (context) => const HomeScreen(),
+        '/scan': (context) => const ScanScreen(),
+        '/history': (context) => const HistoryScreen(),
+        '/guide': (context) => const GuideScreen(),
+        '/about': (context) => const AboutScreen(),
       },
-      initialRoute: "/",
+      theme: _buildTheme(),
     );
   }
+}
+
+/// The whole visual language of the app in one place.
+///
+/// Screens are expected to read their type styles from `Theme.of(context)`
+/// rather than writing their own, so a change here reaches every screen.
+ThemeData _buildTheme() {
+  final base = ThemeData(
+    useMaterial3: true,
+    colorScheme: ColorScheme.fromSeed(
+      seedColor: kPrimaryGreen,
+      brightness: Brightness.light,
+    ).copyWith(surface: kSurface, error: kErrorText),
+  );
+
+  // One rounded shape for every tappable thing.
+  final shape = RoundedRectangleBorder(borderRadius: BorderRadius.circular(12));
+
+  return base.copyWith(
+    scaffoldBackgroundColor: kPageBackground,
+    dividerTheme: const DividerThemeData(
+      color: kBorderColor,
+      thickness: 1,
+      space: 1,
+    ),
+    textTheme: base.textTheme
+        .copyWith(
+          // Screen title.
+          titleLarge: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
+          // Card and section headings.
+          titleMedium: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+          // Numbers and other single-glance values.
+          headlineSmall: const TextStyle(fontSize: 26, fontWeight: FontWeight.w600),
+          bodyMedium: const TextStyle(fontSize: 14, height: 1.45, color: kBodyText),
+          bodySmall: const TextStyle(fontSize: 13, height: 1.4, color: kMutedText),
+        )
+        .apply(displayColor: kHeadingText, bodyColor: kBodyText),
+    navigationBarTheme: NavigationBarThemeData(
+      backgroundColor: kSurface,
+      surfaceTintColor: Colors.transparent,
+      indicatorColor: Colors.transparent,
+      elevation: 0,
+      height: 64,
+      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+      iconTheme: WidgetStateProperty.resolveWith(
+        (states) => IconThemeData(
+          size: 22,
+          color: states.contains(WidgetState.selected) ? kPrimaryGreen : kMutedText,
+        ),
+      ),
+      labelTextStyle: WidgetStateProperty.resolveWith(
+        (states) => TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w500,
+          color: states.contains(WidgetState.selected) ? kPrimaryGreen : kMutedText,
+        ),
+      ),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(minimumSize: const Size(0, 46), shape: shape),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size(0, 46),
+        shape: shape,
+        foregroundColor: kHeadingText,
+        side: const BorderSide(color: kBorderColor),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(foregroundColor: kPrimaryGreen),
+    ),
+    iconButtonTheme: IconButtonThemeData(
+      style: IconButton.styleFrom(foregroundColor: kBodyText),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      shape: shape,
+    ),
+  );
 }

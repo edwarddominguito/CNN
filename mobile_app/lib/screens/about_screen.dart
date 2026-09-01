@@ -1,129 +1,78 @@
 import 'package:flutter/material.dart';
 
-import '../config/api_config.dart';
-import '../widgets/app_nav_scaffold.dart';
+import '../app_colors.dart';
+import '../widgets/app_cards.dart';
+import '../widgets/app_scaffold.dart';
 
+/// What the app is and which grades it can predict. Nothing here changes at
+/// runtime, so the screen holds no state.
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});
 
+  /// The grades the model can predict, written the way a user reads them.
+  static const _grades = [
+    'Premium',
+    'Well-Milled',
+    'Regular-Milled',
+    'Poor-Quality Rice Mix',
+  ];
+
   @override
   Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+
     return AppNavScaffold(
-      currentIndex: 0,
+      currentIndex: 4,
       title: 'About',
-      subtitle: 'Project configuration and commands',
       body: AppPage(
         children: [
+          Text('Rice Grade Classifier', style: textTheme.titleLarge),
+          Text(
+            'A mobile application for identifying the grade of rice grains from '
+            'a photo. Take or choose a photo on the Scan screen to classify a '
+            'sample.',
+            style: textTheme.bodyMedium,
+          ),
+          Text('Supported Grades', style: textTheme.titleMedium),
           AppCard(
-            color: const Color(0xFFEAF4EE),
+            padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Rice CNN Classifier',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'A Flutter app connected to a FastAPI backend for rice grade prediction.',
-                  style: TextStyle(color: Color(0xFF536159), height: 1.45),
-                ),
+                for (var i = 0; i < _grades.length; i++) ...[
+                  if (i > 0) const Divider(height: 1),
+                  _GradeRow(grade: _grades[i]),
+                ],
               ],
             ),
           ),
-          AppResponsiveGrid(
-            children: [
-              _InfoCard(
-                icon: Icons.link_outlined,
-                title: 'Backend URL',
-                value: ApiConfig.baseUrl,
-              ),
-              const _InfoCard(
-                icon: Icons.memory_outlined,
-                title: 'Model File',
-                value: 'backend/model/rice_cnn_model.keras',
-              ),
-              const _InfoCard(
-                icon: Icons.folder_outlined,
-                title: 'Dataset Folder',
-                value: 'backend/dataset',
-              ),
-            ],
-          ),
-          const AppSectionHeader(title: 'Useful Commands'),
-          const AppCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _CommandLine(command: 'python train_model.py'),
-                Divider(height: 24),
-                _CommandLine(
-                  command:
-                      'python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000',
-                ),
-              ],
-            ),
-          ),
+          Text('Version 1.0', style: textTheme.bodySmall),
         ],
       ),
     );
   }
 }
 
-class _InfoCard extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String value;
+/// One grade inside the card, laid out like the icon-and-title rows the rest
+/// of the app uses.
+class _GradeRow extends StatelessWidget {
+  final String grade;
 
-  const _InfoCard({
-    required this.icon,
-    required this.title,
-    required this.value,
-  });
+  const _GradeRow({required this.grade});
 
   @override
   Widget build(BuildContext context) {
-    return AppCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      child: Row(
         children: [
-          Icon(icon, color: Theme.of(context).colorScheme.primary),
-          const SizedBox(height: 12),
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-          const SizedBox(height: 6),
-          SelectableText(
-            value,
-            style: const TextStyle(color: Color(0xFF536159)),
+          const Icon(Icons.grain, size: 20, color: kPrimaryGreen),
+          const SizedBox(width: 14),
+          // Expanded so a long grade wraps instead of overflowing the row.
+          Expanded(
+            child: Text(grade, style: Theme.of(context).textTheme.titleMedium),
           ),
         ],
       ),
-    );
-  }
-}
-
-class _CommandLine extends StatelessWidget {
-  final String command;
-
-  const _CommandLine({required this.command});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        const Icon(Icons.terminal, size: 20),
-        const SizedBox(width: 10),
-        Expanded(
-          child: SelectableText(
-            command,
-            style: const TextStyle(
-              color: Color(0xFF1E2722),
-              fontFamily: 'monospace',
-            ),
-          ),
-        ),
-      ],
     );
   }
 }

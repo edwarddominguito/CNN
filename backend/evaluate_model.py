@@ -1,105 +1,188 @@
+"""Scoring one fold, and turning five folds into the numbers the apps display.
+
+Every score here comes from an evaluation fold the model never trained on. Training
+accuracy is deliberately never reported as a result.
+"""
+
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
-from python_env import use_local_venv
+import matplotlib
 
-use_local_venv()
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.metrics import classification_report, confusion_matrix
 
-import tensorflow as tf
+from image_preprocessing import CLASS_NAMES
 
-
-BASE_DIR = Path(__file__).resolve().parent
-TEST_DIR = BASE_DIR / "dataset" / "test"
-MODEL_PATH = BASE_DIR / "model" / "rice_cnn_model.keras"
-CLASS_NAMES_PATH = BASE_DIR / "model" / "class_names.json"
-
-DEFAULT_CLASS_NAMES = [
-    "Premium",
-    "Well-Milled",
-    "Regular-Milled",
-    "Poor-Quality-Rice-Mix",
-]
-
-IMAGE_SIZE = (224, 224)
-BATCH_SIZE = 32
-IMAGE_EXTENSIONS = {".bmp", ".gif", ".jpeg", ".jpg", ".png"}
+# The four headline scores, in the order the dashboards show them.
+HEADLINE_METRICS = ("accuracy", "precision", "recall", "f1_score")
 
 
-def load_class_names():
-    if CLASS_NAMES_PATH.exists():
-        with CLASS_NAMES_PATH.open("r", encoding="utf-8") as file:
-            return json.load(file)
+def evaluate_fold(model, dataset, actual_labels, class_names: list) -> dict:
+    """Score one untouched evaluation fold.
 
-    return DEFAULT_CLASS_NAMES
+    Macro averaging treats every grade equally, so a rare grade cannot be hidden by
+    a common one. zero_division=0 keeps a grade that was never predicted at 0
+    instead of crashing.
+    """
+    label_ids = range(len(class_names))
+    probabilities = model.predict(dataset, verbose=0)
+    predicted_labels = np.argmax(probabilities, axis=1)
 
-
-def main():
-    if not MODEL_PATH.exists():
-        raise FileNotFoundError(f"Missing trained model: {MODEL_PATH}")
-    if not TEST_DIR.exists():
-        raise FileNotFoundError(f"Missing test dataset folder: {TEST_DIR}")
-
-    class_names = load_class_names()
-    missing_classes = [
-        class_name for class_name in class_names if not (TEST_DIR / class_name).exists()
-    ]
-    if missing_classes:
-        raise FileNotFoundError(
-            f"Missing class folders in {TEST_DIR}: {', '.join(missing_classes)}"
-        )
-
-    empty_classes = []
-    for class_name in class_names:
-        class_dir = TEST_DIR / class_name
-        image_count = sum(
-            1
-            for path in class_dir.iterdir()
-            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-        )
-
-        if image_count == 0:
-            empty_classes.append(class_name)
-
-    if empty_classes:
-        raise ValueError(
-            f"No valid test images found for: {', '.join(empty_classes)}. "
-            f"Add .jpg, .jpeg, .png, .bmp, or .gif images to every test class folder."
-        )
-
-    model = tf.keras.models.load_model(MODEL_PATH)
-    test_dataset = tf.keras.utils.image_dataset_from_directory(
-        TEST_DIR,
-        class_names=class_names,
-        image_size=IMAGE_SIZE,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-    )
-
-    loss, accuracy = model.evaluate(test_dataset, verbose=1)
-    print(f"Test loss: {loss:.4f}")
-    print(f"Test accuracy: {accuracy:.4f}")
-
-    true_labels = []
-    predicted_labels = []
-
-    for images, labels in test_dataset:
-        predictions = model.predict(images, verbose=0)
-        true_labels.extend(labels.numpy().tolist())
-        predicted_labels.extend(tf.argmax(predictions, axis=1).numpy().tolist())
-
-    matrix = tf.math.confusion_matrix(
-        true_labels,
+    report = classification_report(
+        actual_labels,
         predicted_labels,
-        num_classes=len(class_names),
-    ).numpy()
+        labels=label_ids,
+        target_names=class_names,
+        output_dict=True,
+        zero_division=0,
+    )
+    matrix = confusion_matrix(actual_labels, predicted_labels, labels=label_ids)
 
-    print("Class order:")
-    for index, class_name in enumerate(class_names):
-        print(f"{index}: {class_name}")
+    return {
+        "accuracy": float(report["accuracy"]),
+        "precision": float(report["macro avg"]["precision"]),
+        "recall": float(report["macro avg"]["recall"]),
+        "f1_score": float(report["macro avg"]["f1-score"]),
+        "per_class": {
+            name: {
+                "precision": float(report[name]["precision"]),
+                "recall": float(report[name]["recall"]),
+                "f1_score": float(report[name]["f1-score"]),
+                "support": int(report[name]["support"]),
+            }
+            for name in class_names
+        },
+        "confusion_matrix": matrix.tolist(),
+    }
 
-    print("Confusion matrix:")
-    print(matrix)
+
+def find_best_epoch(history) -> int:
+    """The epoch with the lowest validation loss, ignoring any NaN epochs."""
+    losses = np.asarray(history.history["val_loss"], dtype=float)
+    usable = np.flatnonzero(np.isfinite(losses))
+    if len(usable) == 0:
+        raise RuntimeError("Training produced no usable validation loss.")
+    return int(usable[np.argmin(losses[usable])]) + 1
+
+
+def mean_and_deviation(fold_results: list, key: str) -> tuple:
+    """Mean and sample standard deviation (ddof=1) of one metric across folds."""
+    values = np.array([result[key] for result in fold_results], dtype=float)
+    deviation = float(values.std(ddof=1)) if len(values) > 1 else 0.0
+    return float(values.mean()), deviation
+
+
+def summarize_folds(fold_results: list) -> str:
+    """Readable summary of the five folds, for the console and a text file."""
+    lines = [f"Group-aware stratified {len(fold_results)}-fold cross-validation", ""]
+    for key in HEADLINE_METRICS:
+        mean, deviation = mean_and_deviation(fold_results, key)
+        label = key.replace("_", " ").title()
+        lines.append(f"{label:10s}: {mean:.4f} +/- {deviation:.4f}")
+    return "\n".join(lines) + "\n"
+
+
+def write_json(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending = path.with_suffix(".pending.json")
+    pending.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    pending.replace(path)
+
+
+def save_fold_results(fold_results: list, results_dir: Path) -> str:
+    """Rewritten after every fold, so an interrupted run still leaves results."""
+    write_json(results_dir / "cross_validation.json", fold_results)
+    summary = summarize_folds(fold_results)
+    (results_dir / "summary.txt").write_text(summary, encoding="utf-8")
+    return summary
+
+
+def save_confusion_matrix(matrix, class_names: list, path: Path, title: str) -> None:
+    """Save one confusion matrix as a PNG for the written report."""
+    matrix = np.asarray(matrix)
+    figure, axis = plt.subplots(figsize=(7, 6))
+    figure.colorbar(axis.imshow(matrix, cmap="Blues"), ax=axis)
+    axis.set(
+        title=title,
+        xlabel="Predicted grade",
+        ylabel="Actual grade",
+        xticks=range(len(class_names)),
+        yticks=range(len(class_names)),
+        xticklabels=class_names,
+        yticklabels=class_names,
+    )
+    plt.setp(axis.get_xticklabels(), rotation=30, ha="right")
+
+    highest = matrix.max() if matrix.size else 0
+    for (row, column), count in np.ndenumerate(matrix):
+        shade = "white" if count > highest / 2 else "black"
+        axis.text(column, row, count, ha="center", va="center", color=shade)
+
+    figure.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(path, dpi=150)
+    plt.close(figure)
+
+
+def average_per_class(fold_results: list, class_name: str, key: str) -> float:
+    values = [result["per_class"][class_name][key] for result in fold_results]
+    return round(float(np.mean(values)) * 100, 2)
+
+
+def save_dashboard_metrics(fold_results: list, scanned, path: Path) -> None:
+    """Write model/metrics.json, which FastAPI serves at /metrics.
+
+    Percent units and key names match what the Flutter and React apps already read,
+    so the dashboards pick up cross-validated numbers without any frontend change.
+    """
+    trained = scanned.class_names
+    summary = {key: mean_and_deviation(fold_results, key) for key in HEADLINE_METRICS}
+
+    payload = {key: round(mean * 100, 2) for key, (mean, _) in summary.items()}
+    payload.update(
+        {f"{key}_std": round(deviation * 100, 2) for key, (_, deviation) in summary.items()}
+    )
+    payload.update(
+        {
+            "classes": trained,
+            "all_classes": CLASS_NAMES,
+            "trained_classes": trained,
+            "reserved_classes": scanned.reserved,
+            "class_status": [
+                {
+                    "name": name,
+                    "trained": name in trained,
+                    "status": "trained" if name in trained else "reserved",
+                }
+                for name in CLASS_NAMES
+            ],
+            "per_class": {
+                name: {
+                    key: average_per_class(fold_results, name, key)
+                    for key in ("precision", "recall", "f1_score")
+                }
+                for name in trained
+            },
+            "evaluation_method": (
+                f"Group-aware stratified {len(fold_results)}-fold cross-validation"
+            ),
+            "folds": len(fold_results),
+            "evaluation_images": sum(
+                result["evaluation_images"] for result in fold_results
+            ),
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+    )
+    write_json(path, payload)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(
+        "evaluate_model.py holds the scoring code and is imported by train_5fold.py.\n"
+        "Cross-validated results are written by:\n"
+        "  .\\.venv\\Scripts\\python.exe train_5fold.py --dataset dataset --epochs 30"
+    )

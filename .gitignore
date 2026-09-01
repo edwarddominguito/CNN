@@ -1,12 +1,18 @@
 .idea/
 .vscode/
+*.iml
 .DS_Store
 Thumbs.db
+
+.env
+.env.*
+!.env.example
 
 node_modules/
 dist/
 build/
 coverage/
+mobile_app_onedrive_backup_*/
 
 .venv/
 __pycache__/

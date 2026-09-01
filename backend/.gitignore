@@ -1,15 +1,25 @@
 __pycache__/
 *.py[cod]
+*.log
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
 
 .venv/
+.tmp/
+.tmp*/
+.keras_cache/
+.matplotlib_cache/
+
+# Cross-validation output: regenerate it with train_5fold.py.
+results/
 
 uploads/*
 !uploads/.gitkeep
 
+# Trained weights, class order, metrics, and the per-fold checkpoints.
+# Covers model/*.keras and any half-written *.pending.* file.
 model/*
 !model/.gitkeep
 

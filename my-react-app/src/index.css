@@ -29,30 +29,15 @@
 
 *,
 *::before,
-*::after {
-  box-sizing: border-box;
-}
+*::after { box-sizing: border-box; }
 
-body {
-  min-width: 320px;
-  min-height: 100vh;
-  margin: 0;
-}
+body { min-width: 320px; min-height: 100vh; margin: 0; }
 
 button,
-input {
-  font: inherit;
-}
+input { font: inherit; }
 
-button {
-  color: inherit;
-}
+button { color: inherit; }
 
-img {
-  display: block;
-  max-width: 100%;
-}
+img { display: block; max-width: 100%; }
 
-#root {
-  min-height: 100vh;
-}
+#root { min-height: 100vh; }

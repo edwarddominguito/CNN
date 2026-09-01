@@ -1,141 +1,179 @@
+"""The CNN itself: architecture, augmentation, callbacks, and the final model.
+
+Import this from train_5fold.py. Running it directly does nothing useful, because a
+single train/validation split cannot measure this dataset honestly - there are only
+five batches per grade, so one split would hide most of the variation that the
+five-fold run reports.
+"""
+
 import json
 from pathlib import Path
 
-from python_env import use_local_venv
-
-use_local_venv()
-
+import numpy as np
 import tensorflow as tf
 
+from image_preprocessing import IMAGE_SIZE, make_dataset
 
-BASE_DIR = Path(__file__).resolve().parent
-DATASET_DIR = BASE_DIR / "dataset"
-TRAIN_DIR = DATASET_DIR / "train"
-VALIDATION_DIR = DATASET_DIR / "validation"
-MODEL_DIR = BASE_DIR / "model"
-MODEL_PATH = MODEL_DIR / "rice_cnn_model.keras"
-CLASS_NAMES_PATH = MODEL_DIR / "class_names.json"
+# The calibrator in model_calibration.py looks this layer up by name. Renaming it
+# silently disables prediction calibration in the API.
+EMBEDDING_LAYER_NAME = "rice_embedding"
 
-CLASS_NAMES = [
-    "Premium",
-    "Well-Milled",
-    "Regular-Milled",
-    "Poor-Quality-Rice-Mix",
-]
-
-IMAGE_SIZE = (224, 224)
-BATCH_SIZE = 32
-EPOCHS = 15
-SEED = 42
-IMAGE_EXTENSIONS = {".bmp", ".gif", ".jpeg", ".jpg", ".png"}
+EARLY_STOPPING_PATIENCE = 5
+REDUCE_LR_PATIENCE = 2
 
 
-def validate_split(split_dir):
-    if not split_dir.exists():
-        raise FileNotFoundError(f"Missing dataset folder: {split_dir}")
+def build_augmentation() -> tf.keras.Sequential:
+    """Moderate augmentation, kept inside the model.
 
-    missing_classes = [
-        class_name for class_name in CLASS_NAMES if not (split_dir / class_name).exists()
-    ]
-    if missing_classes:
-        raise FileNotFoundError(
-            f"Missing class folders in {split_dir}: {', '.join(missing_classes)}"
-        )
-
-    empty_classes = []
-    for class_name in CLASS_NAMES:
-        class_dir = split_dir / class_name
-        image_count = sum(
-            1
-            for path in class_dir.iterdir()
-            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-        )
-
-        if image_count == 0:
-            empty_classes.append(class_name)
-
-    if empty_classes:
-        raise ValueError(
-            f"No valid images found in {split_dir} for: {', '.join(empty_classes)}. "
-            f"Add .jpg, .jpeg, .png, .bmp, or .gif images to every class folder."
-        )
+    Keras runs these layers only when training=True, so validation and evaluation
+    images pass through untouched and the saved model needs no special handling.
+    """
+    return tf.keras.Sequential(
+        [
+            tf.keras.layers.RandomRotation(0.04),
+            tf.keras.layers.RandomZoom(0.08),
+            tf.keras.layers.RandomTranslation(0.04, 0.04),
+            tf.keras.layers.RandomContrast(0.10),
+        ],
+        name="rice_augmentation",
+    )
 
 
-def build_model(num_classes):
-    inputs = tf.keras.Input(shape=(*IMAGE_SIZE, 3))
+def build_model(num_classes: int) -> tf.keras.Model:
+    """MobileNetV2 transfer learning, with preprocessing baked into the model.
 
-    x = tf.keras.layers.RandomFlip("horizontal")(inputs)
-    x = tf.keras.layers.RandomRotation(0.08)(x)
-    x = tf.keras.layers.RandomZoom(0.08)(x)
-    x = tf.keras.layers.Rescaling(1.0 / 255)(x)
+    Keeping the rescaling inside means FastAPI can hand the model a plain RGB array
+    and cannot accidentally normalise it differently from training.
+    """
+    if num_classes < 2:
+        raise ValueError("A classifier needs at least two grades to train on.")
 
-    x = tf.keras.layers.Conv2D(32, 3, activation="relu", padding="same")(x)
-    x = tf.keras.layers.MaxPooling2D()(x)
-    x = tf.keras.layers.Conv2D(64, 3, activation="relu", padding="same")(x)
-    x = tf.keras.layers.MaxPooling2D()(x)
-    x = tf.keras.layers.Conv2D(128, 3, activation="relu", padding="same")(x)
-    x = tf.keras.layers.MaxPooling2D()(x)
+    backbone = tf.keras.applications.MobileNetV2(
+        input_shape=(*IMAGE_SIZE, 3), include_top=False, weights="imagenet"
+    )
+    # The dataset is small, so the pretrained features stay frozen.
+    backbone.trainable = False
 
+    inputs = tf.keras.Input(shape=(*IMAGE_SIZE, 3), name="rice_image")
+    x = build_augmentation()(inputs)
+    x = tf.keras.layers.Rescaling(1 / 127.5, offset=-1.0, name="mobilenet_preprocess")(x)
+    x = backbone(x, training=False)
     x = tf.keras.layers.GlobalAveragePooling2D()(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
-    outputs = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
+    x = tf.keras.layers.Dropout(0.35)(x)
+    x = tf.keras.layers.Dense(128, activation="relu", name=EMBEDDING_LAYER_NAME)(x)
+    x = tf.keras.layers.Dropout(0.25)(x)
+    outputs = tf.keras.layers.Dense(
+        num_classes, activation="softmax", name="grade_probabilities"
+    )(x)
 
-    model = tf.keras.Model(inputs, outputs)
+    model = tf.keras.Model(inputs, outputs, name="rice_mobilenet_v2")
     model.compile(
-        optimizer="adam",
+        optimizer=tf.keras.optimizers.Adam(),
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"],
     )
     return model
 
 
-def main():
-    validate_split(TRAIN_DIR)
-    validate_split(VALIDATION_DIR)
-    MODEL_DIR.mkdir(exist_ok=True)
-
-    train_dataset = tf.keras.utils.image_dataset_from_directory(
-        TRAIN_DIR,
-        class_names=CLASS_NAMES,
-        image_size=IMAGE_SIZE,
-        batch_size=BATCH_SIZE,
-        seed=SEED,
-    )
-    validation_dataset = tf.keras.utils.image_dataset_from_directory(
-        VALIDATION_DIR,
-        class_names=CLASS_NAMES,
-        image_size=IMAGE_SIZE,
-        batch_size=BATCH_SIZE,
-        seed=SEED,
-    )
-
-    autotune = tf.data.AUTOTUNE
-    train_dataset = train_dataset.cache().shuffle(1000).prefetch(autotune)
-    validation_dataset = validation_dataset.cache().prefetch(autotune)
-
-    model = build_model(num_classes=len(CLASS_NAMES))
-    callbacks = [
+def build_callbacks(checkpoint_path: Path) -> list:
+    """Stop when validation loss stops improving, and keep the best weights."""
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    return [
         tf.keras.callbacks.EarlyStopping(
             monitor="val_loss",
-            patience=4,
+            patience=EARLY_STOPPING_PATIENCE,
             restore_best_weights=True,
-        )
+        ),
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor="val_loss", factor=0.2, patience=REDUCE_LR_PATIENCE, min_lr=1e-7
+        ),
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=checkpoint_path, monitor="val_loss", save_best_only=True
+        ),
     ]
 
+
+def compute_class_weights(labels, num_classes: int) -> dict:
+    """Weight rarer grades higher so a common grade cannot hide them."""
+    counts = np.bincount(labels, minlength=num_classes)
+    return {
+        index: len(labels) / (num_classes * int(count))
+        for index, count in enumerate(counts)
+        if count > 0
+    }
+
+
+def start_fresh_model(num_classes: int, seed: int) -> tf.keras.Model:
+    """Clear Keras state and build an untrained model.
+
+    Every fold calls this, so no fold can inherit weights from the fold before it.
+    """
+    tf.keras.backend.clear_session()
+    tf.keras.utils.set_random_seed(seed)
+    return build_model(num_classes)
+
+
+def save_atomically(path: Path, write) -> None:
+    """Write to a .pending file first, so a crash cannot leave the API half a file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending = path.with_suffix(f".pending{path.suffix}")
+    write(pending)
+    pending.replace(path)
+
+
+def train_deployment_model(scanned, best_epochs, batch_size: int, seed: int, model_dir: Path):
+    """Train the model FastAPI will serve, using every image in the dataset.
+
+    The epoch count is the median best epoch from the five folds, because there is no
+    validation set left to early-stop on. No accuracy is claimed for this model: the
+    five-fold numbers are the honest measurement.
+    """
+    epochs = max(1, int(np.median(best_epochs)))
+    print(f"\nTraining the deployment model on all {len(scanned.paths)} images "
+          f"for {epochs} epoch(s).")
+
+    model = start_fresh_model(len(scanned.class_names), seed)
     model.fit(
-        train_dataset,
-        validation_data=validation_dataset,
-        epochs=EPOCHS,
-        callbacks=callbacks,
+        make_dataset(scanned.paths, scanned.labels, batch_size, True, seed),
+        epochs=epochs,
+        class_weight=compute_class_weights(scanned.labels, len(scanned.class_names)),
+        verbose=2,
     )
 
-    model.save(MODEL_PATH)
-    with CLASS_NAMES_PATH.open("w", encoding="utf-8") as file:
-        json.dump(CLASS_NAMES, file, indent=2)
+    model_path = model_dir / "rice_cnn_model.keras"
+    save_atomically(model_path, model.save)
+    save_atomically(
+        model_dir / "class_names.json",
+        lambda target: target.write_text(
+            json.dumps(scanned.class_names, indent=2), encoding="utf-8"
+        ),
+    )
+    print(f"Saved deployment model: {model_path}")
+    print(f"Saved class order: {model_dir / 'class_names.json'}")
 
-    print(f"Saved model to {MODEL_PATH}")
-    print(f"Saved class names to {CLASS_NAMES_PATH}")
+    save_calibration_cache(model, scanned)
+    return model
+
+
+def save_calibration_cache(model, scanned) -> None:
+    """Refresh the support embeddings the API uses to calibrate predictions.
+
+    Imported here rather than at the top so a calibration problem can never stop the
+    model from being saved. The API falls back to raw model output without it.
+    """
+    from model_calibration import save_support_embeddings
+
+    try:
+        samples = list(zip(scanned.labels.tolist(), scanned.paths.tolist()))
+        count = save_support_embeddings(model, scanned.class_names, samples=samples)
+        print(f"Saved {count} support embedding(s) for prediction calibration.")
+    except Exception as error:
+        print(f"Warning: could not build the calibration cache: {error}")
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(
+        "train_model.py holds the model code and is imported by train_5fold.py.\n"
+        "Run the training with:\n"
+        "  .\\.venv\\Scripts\\python.exe train_5fold.py --dataset dataset --epochs 30"
+    )

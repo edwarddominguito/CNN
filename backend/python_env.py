@@ -5,15 +5,22 @@ from pathlib import Path
 
 def use_local_venv():
     base_dir = Path(__file__).resolve().parent
-    venv_python = base_dir / ".venv" / "Scripts" / "python.exe"
+    os.environ.setdefault("MPLCONFIGDIR", str(base_dir / ".matplotlib_cache"))
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
+    venv_python = base_dir / ".venv" / "Scripts" / "python.exe"
     if not venv_python.exists():
         return
 
-    current_python = Path(sys.executable).resolve()
-    target_python = venv_python.resolve()
-
-    if current_python == target_python:
+    target = venv_python.resolve()
+    if Path(sys.executable).resolve() == target:
         return
 
-    os.execv(str(target_python), [str(target_python), *sys.argv])
+    try:
+        os.execv(str(target), [str(target), *sys.argv])
+    except OSError as error:
+        raise SystemExit(
+            f"Could not restart with the project's Python ({target}): {error}\n"
+            "Recreate the virtual environment in backend/.venv and install "
+            "requirements.txt."
+        ) from error
