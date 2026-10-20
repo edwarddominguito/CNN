@@ -1,14 +1,13 @@
 /// Shared JSON coercion: the backend may send a number or a numeric string.
 double? toDoubleOrNull(Object? value) {
-  if (value is num) return value.toDouble();
-  if (value is String) return double.tryParse(value);
-  return null;
+  final parsed = value is num ? value.toDouble() : value is String ? double.tryParse(value) : null;
+  return parsed != null && parsed.isFinite ? parsed : null;
 }
 
 /// Shared JSON coercion: anything that is not a filled-in string is treated as
 /// missing, so a wrong type in the response cannot throw a cast error.
 String? toStringOrNull(Object? value) {
-  if (value is String && value.isNotEmpty) return value;
+  if (value is String && value.trim().isNotEmpty) return value;
   return null;
 }
 
@@ -22,10 +21,8 @@ class PredictionResult {
   final String? note;
   final String? error;
 
-  /// True when this came back from the server, which records every answer it
-  /// gives in its own history. Failures the app produced on its own (no
-  /// connection, rejected upload) never reached that history and still have to
-  /// be saved by the app.
+  /// Whether the backend recorded this answer. A temporary database outage
+  /// can leave a valid prediction unsaved, so the app keeps those locally too.
   final bool savedByBackend;
 
   const PredictionResult({
@@ -42,7 +39,7 @@ class PredictionResult {
       confidence: toDoubleOrNull(json['confidence']) ?? 0,
       note: toStringOrNull(json['note']),
       error: toStringOrNull(json['error']),
-      savedByBackend: true,
+      savedByBackend: json['history_saved'] != false,
     );
   }
 }

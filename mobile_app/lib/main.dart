@@ -17,7 +17,7 @@ class RiceGraderApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Rice Grade Classification',
+      title: 'Rice Classifier',
       debugShowCheckedModeBanner: false,
       initialRoute: '/',
       // Every path here must also exist in appRoutes (widgets/app_scaffold.dart)

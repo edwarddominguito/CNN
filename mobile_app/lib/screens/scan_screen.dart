@@ -34,11 +34,14 @@ class _ScanScreenState extends State<ScanScreen> {
   Uint8List? imageBytes; // its contents, used for the preview and the checks
   PredictionResult? prediction; // what the CNN answered
   bool isLoading = false; // true while validating or waiting for FastAPI
+  bool _isPicking = false;
   String loadingMessage = ''; // which of those two steps is running
   String? errorMessage; // why the last attempt stopped
 
   /// Used by both the Camera and the Gallery button, only [source] differs.
   Future<void> pickImage(ImageSource source) async {
+    if (_isPicking || isLoading) return;
+    _isPicking = true;
     XFile? picked;
     Uint8List? bytes;
     String? problem;
@@ -48,11 +51,18 @@ class _ScanScreenState extends State<ScanScreen> {
       if (picked == null) {
         return; // The user closed the camera or the picker.
       }
-      bytes = await picked.readAsBytes();
+      if (await picked.length() > maxImageBytes) {
+        problem = 'This image is too large. Please use an image under 15 MB.';
+      } else {
+        bytes = await picked.readAsBytes();
+        problem = await validateImage(picked.name, bytes);
+      }
     } on Exception catch (_) {
       // A denied camera or photo permission, or a file the phone cannot read.
       problem = 'Could not use that image. Check the camera and photo '
           'permissions for this app, then try another photo.';
+    } finally {
+      _isPicking = false;
     }
 
     if (!mounted) {
@@ -108,16 +118,16 @@ class _ScanScreenState extends State<ScanScreen> {
       errorMessage = result.error;
     });
 
-    // The backend records every answer it sends, successes and failures alike.
-    // Only a failure the app produced on its own is still missing from the
-    // History screen; saving the others too would list one scan twice.
-    if (result.error != null && !result.savedByBackend) {
-      await _api.saveFailedPrediction(
+    // Keep answers the backend could not record, including valid predictions
+    // during a database outage. Already-recorded answers must not be duplicated.
+    if (!result.savedByBackend) {
+      await _api.saveUnsavedPrediction(
         PredictionHistoryEntry(
           predictedGrade: result.predictedGrade,
           confidence: result.confidence,
           createdAt: DateTime.now(),
           imagePath: picked.path,
+          note: result.note,
           error: result.error,
         ),
       );

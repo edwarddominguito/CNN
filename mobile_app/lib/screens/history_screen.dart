@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app_colors.dart';
+import '../content/rice_grades.dart';
 import '../models/prediction_history_entry.dart';
 import '../services/rice_api_service.dart';
 import '../widgets/app_cards.dart';
@@ -44,6 +45,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   Future<void> clearHistory() async {
     await _apiService.clearHistory();
+    if (!mounted) {
+      return; // History was closed while the clear was still running.
+    }
     await loadHistory();
   }
 
@@ -109,9 +113,10 @@ class _HistoryItem extends StatelessWidget {
   const _HistoryItem({required this.entry});
 
   String _formatDate(DateTime date) {
-    final hour = date.hour.toString().padLeft(2, '0');
-    final minute = date.minute.toString().padLeft(2, '0');
-    return '${date.month}/${date.day}/${date.year} $hour:$minute';
+    final local = date.toLocal();
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '${local.month}/${local.day}/${local.year} $hour:$minute';
   }
 
   @override
@@ -122,7 +127,8 @@ class _HistoryItem extends StatelessWidget {
       icon: isError ? Icons.error_outline : Icons.check_circle_outline,
       iconColor: isError ? kErrorText : kPrimaryGreen,
       background: isError ? kErrorSurface : kSurface,
-      title: entry.predictedGrade,
+      // Display only; the saved entry keeps the backend's exact label.
+      title: gradeDisplayName(entry.predictedGrade),
       subtitle: isError
           ? entry.error!
           : '${entry.confidence.toStringAsFixed(2)}% confidence',

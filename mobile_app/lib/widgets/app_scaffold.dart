@@ -62,12 +62,18 @@ class AppNavScaffold extends StatelessWidget {
   final Widget body;
   final List<Widget>? actions;
 
+  /// True for a page opened from inside a tab, such as a Guide topic, rather
+  /// than a tab itself. Its back arrow returns to the page underneath instead
+  /// of Home, and tapping its own tab goes back to that tab's first page.
+  final bool isSubPage;
+
   const AppNavScaffold({
     super.key,
     required this.currentIndex,
     required this.title,
     required this.body,
     this.actions,
+    this.isSubPage = false,
   });
 
   @override
@@ -80,7 +86,12 @@ class AppNavScaffold extends StatelessWidget {
             _TopBar(
               title: title,
               actions: actions,
-              onBack: currentIndex == 0 ? null : () => _openTab(context, 0),
+              backTooltip: isSubPage ? 'Back' : 'Back to Home',
+              onBack: isSubPage
+                  ? () => Navigator.maybePop(context)
+                  : currentIndex == 0
+                      ? null
+                      : () => _openTab(context, 0),
             ),
             Expanded(child: body),
           ],
@@ -108,7 +119,9 @@ class AppNavScaffold extends StatelessWidget {
 
   /// Clears the old screens so tapping tabs never piles them up on each other.
   void _openTab(BuildContext context, int index) {
-    if (index == currentIndex) {
+    // A tab ignores a tap on itself; a page inside it treats the tap as "back
+    // to the start of this tab".
+    if (index == currentIndex && !isSubPage) {
       return;
     }
     Navigator.pushNamedAndRemoveUntil(context, appRoutes[index].path, (route) => false);
@@ -119,8 +132,14 @@ class _TopBar extends StatelessWidget {
   final String title;
   final List<Widget>? actions;
   final VoidCallback? onBack;
+  final String backTooltip;
 
-  const _TopBar({required this.title, required this.actions, required this.onBack});
+  const _TopBar({
+    required this.title,
+    required this.actions,
+    required this.onBack,
+    required this.backTooltip,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -131,7 +150,7 @@ class _TopBar extends StatelessWidget {
           children: [
             if (onBack != null)
               IconButton(
-                tooltip: 'Back to Home',
+                tooltip: backTooltip,
                 icon: const Icon(Icons.arrow_back, size: 20),
                 onPressed: onBack,
               ),

@@ -47,9 +47,13 @@ class ImagePreview extends StatelessWidget {
                         title: 'No sample loaded',
                         message: 'Use Camera or Gallery below to add a photo.',
                       )
-                    : Image.memory(
-                        bytes,
-                        cacheWidth: _previewDecodeWidth,
+                    : Image(
+                        image: ResizeImage(
+                          MemoryImage(bytes),
+                          width: _previewDecodeWidth,
+                          height: _previewDecodeWidth,
+                          policy: ResizeImagePolicy.fit,
+                        ),
                         fit: BoxFit.cover,
                         width: double.infinity,
                         height: preferredHeight,

@@ -1,0 +1,77 @@
+name: Deployment checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: rice_classifier
+          MYSQL_ROOT_PASSWORD: ci-only-password
+          MYSQL_ROOT_HOST: '%'
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pci-only-password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ci-only-password
+      MYSQL_DATABASE: rice_classifier
+      TF_NUM_INTRAOP_THREADS: 1
+      TF_NUM_INTEROP_THREADS: 1
+      OMP_NUM_THREADS: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements*.txt
+            backend/constraints.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: my-react-app/package-lock.json
+      - name: Install and check Python dependencies
+        run: |
+          python -m pip install --only-binary=:all: -r backend/requirements-dev.txt
+          python -m pip check
+      - name: Backend regression tests
+        working-directory: backend
+        run: python -m unittest discover -s tests -v
+      - name: Web checks
+        working-directory: my-react-app
+        run: |
+          npm ci --no-audit --no-fund
+          npm run lint
+          npm test
+          npm run build
+      - name: Build production image
+        run: docker build --tag rice-cnn:ci .
+      - name: Start production image against MySQL
+        run: >-
+          docker run --detach --name rice-cnn-ci --network host
+          --env PORT=8080 --env MYSQL_HOST --env MYSQL_PORT
+          --env MYSQL_USER --env MYSQL_PASSWORD --env MYSQL_DATABASE rice-cnn:ci
+      - name: Check readiness, web application, history, and real model inference
+        run: python backend/scripts/smoke_deployment.py --url http://127.0.0.1:8080 --wait 180 --exercise-prediction
+      - name: Container logs
+        if: always()
+        run: docker logs rice-cnn-ci 2>&1 || true

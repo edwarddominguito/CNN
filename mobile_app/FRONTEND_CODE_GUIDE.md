@@ -12,6 +12,7 @@ This app is plain Flutter: `StatefulWidget`, `setState()`, `Navigator`, and
 lib/
 ├── main.dart          the app starts here
 ├── app_colors.dart    all shared colours
+├── content/           the Guide's static text, quiz questions and grade display names
 ├── models/            the shapes of the data from the backend
 ├── screens/           one file per page
 ├── services/          the code that talks to FastAPI
@@ -69,21 +70,34 @@ Loads past predictions in `initState()`, keeps them in a `List`, and shows one
 row per prediction. Has Refresh and Clear buttons in the title bar.
 
 ### guide_screen.dart (StatelessWidget)
-Fixed photography tips. The tips are a `const` list at the top of the file, so
-adding a tip means adding one row.
+The Guide tab: a short, grouped list of learning topics (rice grades, quality
+characteristics, grade comparison, capture guide, how the CNN works, confidence,
+mini quiz, glossary, references). The list comes from `guideSections` in
+`content/guide_content.dart`.
+
+### guide_topic_screen.dart (StatelessWidget)
+One screen for every Guide page. It draws the topic's blocks (paragraphs, notes,
+bullet lists, steps, cards, comparison, quiz) with `widgets/guide_blocks.dart`.
+Adding a page means adding a `GuideTopic` to `content/guide_content.dart`, not a
+new screen. `openGuideTopic()` opens a page and ignores a double tap.
+
+All Guide text is static. Nothing in the Guide calls the backend, and nothing in
+it claims the CNN detects defects: the model only classifies the whole photo.
 
 ### about_screen.dart (StatelessWidget)
-A short description of the app, the four grades it supports, and the version.
+A short description of the app, the three grades it supports, and the version.
 Nothing on it changes at runtime, so it holds no state and makes no request.
 Server addresses, model paths and evaluation results are deliberately kept out
-of the app — they live in `DEVELOPMENT.md` and the results files.
+of the app — they live in `docs/DEVELOPMENT.md` and the results files.
 
 ---
 
 ## 4. Services
 
 ### services/api_config.dart
-The **only** place the backend address is written.
+The **only** place the backend address is selected. Production builds use
+`--dart-define=API_BASE_URL=https://your-backend.up.railway.app` and require
+HTTPS. Debug builds without that setting keep the local defaults below.
 
 ```dart
 static List<String> get baseUrls {
@@ -103,7 +117,8 @@ the app runs:
 | Chrome / Windows desktop | `http://127.0.0.1:8000` |
 | Real phone on the same Wi-Fi | `http://YOUR_PC_IP:8000` (add it first in the list) |
 
-The app tries each address in order and uses the first one that answers.
+The app tries the debug addresses in order and uses the first one that answers.
+When `API_BASE_URL` is set, only that address is used, with no localhost fallback.
 
 ### services/rice_api_service.dart
 All backend communication, in one class:
@@ -112,21 +127,25 @@ All backend communication, in one class:
 | --- | --- | --- |
 | `predictRiceGrade(image)` | uploads a photo, returns the grade | `POST /predict` |
 | `getHistory()` | past predictions | `GET /history` |
-| `saveFailedPrediction(entry)` | records a failure | `POST /history` |
+| `saveUnsavedPrediction(entry)` | records an answer the backend did not save | `POST /history` |
 | `clearHistory()` | deletes everything | `DELETE /history` |
 
 Inside, one small private helper is reused by all of them:
 
 ```dart
-Future<T?> _tryEachHost<T>(Future<T?> Function(String baseUrl) sendRequest)
+Future<T?> _tryEachHost<T>(Future<T?> Function(String, http.Client) sendRequest, {Duration? timeout})
 ```
 
 It loops over the addresses from `ApiConfig`, tries each one, and returns the
 first answer. If no address works it returns `null`, and the calling method
-turns that into a friendly message instead of a crash.
+turns that into a friendly message instead of a crash. Each request closes its
+HTTP client in `finally`, including on timeout. The upload deadline is two
+minutes; history requests use five seconds.
 
 When the backend cannot be reached, history falls back to a small copy saved on
-the phone with `shared_preferences`.
+the phone with `shared_preferences`. The `history_saved` response flag also
+preserves valid predictions when the backend's database is unavailable.
+Those unsaved entries remain local when the server history is refreshed.
 
 ### services/image_validation.dart
 One function, `validateImage(fileName, bytes)`. It returns `null` when the image
@@ -172,7 +191,13 @@ One row of the History screen. It has `fromJson()` to read a saved row and
 | `widgets/app_cards.dart` | The small shared pieces: `AppCard` (the rounded box every screen is built from), `AppTile` (icon + title + one line, tappable), `AppInfoCard`, `AppSectionHeader`, `AppEmptyState`, and `AppCardGrid`. |
 | `widgets/image_preview.dart` | `ImagePreview` — shows the picked photo, or "No sample loaded" when nothing is picked. |
 | `widgets/scan_controls.dart` | `ScanControls` — the Take Photo, Gallery and Classify Rice buttons. Only built when the screen is idle, so it needs no busy state. |
-| `widgets/prediction_result_card.dart` | `PredictionResultCard` — the grade, the model confidence and its bar. Only ever built for a real prediction; failures are shown by the Scan screen. |
+| `widgets/prediction_result_card.dart` | `PredictionResultCard` — the grade, the model confidence and its bar, plus links to "About This Grade" and "Understanding Confidence" in the Guide. Only ever built for a real prediction; failures are shown by the Scan screen. |
+| `widgets/guide_blocks.dart` | `GuideBlockView` — draws one block of a Guide page from the shared cards above, so every Guide page looks the same. |
+| `widgets/guide_quiz.dart` | `GuideQuizView` — the multiple-choice quiz. Its score lives only in the widget's state; nothing is saved or sent. |
+
+Grade names: the backend label (for example `Poor-Quality-Rice-Mix`) is stored
+and sent unchanged. `gradeDisplayName()` in `content/rice_grades.dart` only
+changes how it is drawn (`Poor-Quality Rice Mix`).
 
 `app_colors.dart` holds every shared colour, so changing a shade in one place
 changes it everywhere.
@@ -196,6 +221,11 @@ Navigator.pushNamedAndRemoveUntil(context, '/history', (route) => false);
 
 The second one clears the old screens first. Without it, tapping tabs back and
 forth would stack dozens of screens on top of each other.
+
+Guide pages are pushed on top of the screen that opened them with
+`openGuideTopic()`. They pass `isSubPage: true` to `AppNavScaffold`, so their
+back arrow returns to the page underneath (for example a scan result) and
+tapping the Guide tab returns to the Guide list.
 
 ---
 
@@ -375,5 +405,5 @@ flutter run -d chrome      # browser (or use run_chrome.bat)
 
 The server has to be running first, or scans fail with an error on the Scan
 screen. The command for it, along with the addresses, model paths and training
-commands, is in `DEVELOPMENT.md` at the top of the project — those details are
+commands, is in `docs/DEVELOPMENT.md` — those details are
 deliberately kept out of the app itself.

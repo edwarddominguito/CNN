@@ -1,14 +1,23 @@
+"""Nearest-training-sample lookup, kept as a research side tool.
+
+This is NOT part of the official prediction rule. POST /predict reports the CNN's
+own class and softmax confidence and nothing else, so a cosine similarity to a
+stored training image can never rename a grade or stand in for a probability.
+train_model.py still writes artifacts/model/support_embeddings.npz after training;
+nothing in
+main.py reads it.
+"""
+
 from pathlib import Path
 
 import numpy as np
 import tensorflow as tf
 
-from image_preprocessing import IMAGE_EXTENSIONS, load_prediction_crops
+from app.paths import BACKEND_DIR, DATASET_DIR, MODEL_DIR
+from ml.image_preprocessing import IMAGE_EXTENSIONS, load_inference_image
 
 
-BASE_DIR = Path(__file__).resolve().parent
-DATASET_DIR = BASE_DIR / "dataset"
-SUPPORT_EMBEDDINGS_PATH = BASE_DIR / "model" / "support_embeddings.npz"
+SUPPORT_EMBEDDINGS_PATH = MODEL_DIR / "support_embeddings.npz"
 
 EMBEDDING_LAYER_NAME = "rice_embedding"
 SUPPORT_TOP_K = 7
@@ -39,21 +48,11 @@ def normalized_embedding(feature_model, crops):
     return features if norm == 0 else features / norm
 
 
-def class_source_dir(class_name, dataset_dir=DATASET_DIR):
-    """Prefer the grouped batch layout, falling back to the legacy train/ split."""
-    grouped = dataset_dir / class_name
-    if grouped.is_dir():
-        return grouped
-
-    legacy = dataset_dir / "train" / class_name
-    return legacy if legacy.is_dir() else None
-
-
 def class_image_paths(class_names, dataset_dir=DATASET_DIR):
     """Yield (label, path) per image, at any batch depth under the class folder."""
     for label, class_name in enumerate(class_names):
-        class_dir = class_source_dir(class_name, dataset_dir)
-        if class_dir is None:
+        class_dir = dataset_dir / class_name
+        if not class_dir.is_dir():
             continue
 
         yield from (
@@ -66,7 +65,7 @@ def class_image_paths(class_names, dataset_dir=DATASET_DIR):
 def relative_to_backend(path):
     """Store a tidy relative path when possible, but never fail over a path outside."""
     try:
-        return str(path.relative_to(BASE_DIR))
+        return str(path.relative_to(BACKEND_DIR))
     except ValueError:
         return str(path)
 
@@ -85,19 +84,20 @@ def save_support_embeddings(
     for label, image_path in class_image_paths(class_names) if samples is None else samples:
         image_path = Path(image_path)
         try:
-            crops = load_prediction_crops(image_path)
+            image = load_inference_image(image_path)
         except (OSError, ValueError):
             # One unreadable image must not throw away the whole support set.
             continue
 
-        embeddings.append(normalized_embedding(feature_model, crops))
+        embeddings.append(normalized_embedding(feature_model, image[np.newaxis]))
         labels.append(int(label))
         paths.append(relative_to_backend(image_path))
 
     if not embeddings:
         return 0
 
-    output_path.parent.mkdir(exist_ok=True)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         output_path,
         embeddings=np.asarray(embeddings, dtype=np.float32),
@@ -123,15 +123,19 @@ def load_support_embeddings(class_names, path=SUPPORT_EMBEDDINGS_PATH):
         return None
 
     # Checks are ordered: each one assumes the previous passed.
-    usable = (
-        embeddings.ndim == 2
-        and labels.ndim == 1
-        and len(embeddings) == len(labels)
-        and np.issubdtype(labels.dtype, np.integer)
-        and bool(np.all(np.isfinite(embeddings)))
-        and not np.any(labels < 0)
-        and not np.any(labels >= len(class_names))
-    )
+    try:
+        usable = (
+            embeddings.ndim == 2
+            and labels.ndim == paths.ndim == 1
+            and len(embeddings) == len(labels) == len(paths)
+            and np.issubdtype(embeddings.dtype, np.number)
+            and np.issubdtype(labels.dtype, np.integer)
+            and bool(np.all(np.isfinite(embeddings)))
+            and not np.any(labels < 0)
+            and not np.any(labels >= len(class_names))
+        )
+    except (TypeError, ValueError):
+        return None
     if not usable:
         return None
 

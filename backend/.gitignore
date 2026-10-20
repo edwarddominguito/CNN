@@ -12,18 +12,33 @@ __pycache__/
 .keras_cache/
 .matplotlib_cache/
 
-# Cross-validation output: regenerate it with train_5fold.py.
-results/
+# Cross-validation output: regenerate it with ml/train_5fold.py.
+artifacts/results/
 
-uploads/*
-!uploads/.gitkeep
+storage/uploads/*
+!storage/uploads/.gitkeep
 
 # Trained weights, class order, metrics, and the per-fold checkpoints.
-# Covers model/*.keras and any half-written *.pending.* file.
-model/*
-!model/.gitkeep
+# Covers artifacts/model/*.keras and any half-written *.pending.* file.
+artifacts/model/*
+!artifacts/model/.gitkeep
+# Runtime assets are required by a fresh GitHub/Railway checkout. Per-fold
+# checkpoints, research caches and pending writes remain excluded.
+!artifacts/model/rice_cnn_model.keras
+!artifacts/model/class_names.json
+!artifacts/model/metrics.json
 
-dataset/**/*
-!dataset/**/
-!dataset/**/.gitkeep
-!dataset/README.md
+data/dataset/**/*
+!data/dataset/**/
+!data/dataset/**/.gitkeep
+!data/dataset/README.md
+# Dataset documentation, not dataset images: keep it in version control.
+!data/dataset/collection_record.csv
+!data/dataset/dataset_manifest.json
+
+# Backups and manifests written by cleanup_batches.py.
+dataset_backups/
+dataset_manifest_*.csv
+
+# Archived stale runs, kept for provenance.
+archive/

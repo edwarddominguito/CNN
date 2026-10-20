@@ -13,10 +13,10 @@ import 'package:mobile_app/screens/history_screen.dart';
 import 'package:mobile_app/screens/home_screen.dart';
 import 'package:mobile_app/screens/scan_screen.dart';
 
-/// Every screen, at a phone width and a desktop width. Catches layout
+/// Every screen, at a small phone, a phone and a desktop width. Catches layout
 /// exceptions and overflows that the analyzer cannot see.
 void main() {
-  const sizes = [Size(400, 800), Size(1400, 900)];
+  const sizes = [Size(320, 640), Size(400, 800), Size(1400, 900)];
 
   final screens = <String, Widget Function()>{
     'home': () => const HomeScreen(),

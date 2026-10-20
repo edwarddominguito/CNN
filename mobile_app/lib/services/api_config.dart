@@ -1,20 +1,40 @@
 import 'package:flutter/foundation.dart';
 
-/// The only place the backend address is written down.
+/// Use --dart-define=API_BASE_URL=https://your-backend.up.railway.app
+/// for release builds. Debug builds keep the local emulator defaults.
 class ApiConfig {
+  static const _configuredUrl = String.fromEnvironment('API_BASE_URL');
   static const _localhost = [
     'http://127.0.0.1:8000',
     'http://localhost:8000',
   ];
 
-  /// The app tries these addresses in order until one of them answers.
-  ///
-  /// An Android emulator cannot see "localhost" on your computer, it reaches
-  /// the host machine through 10.0.2.2 instead. To run the app on a real phone
-  /// on the same Wi-Fi, put your computer's IPv4 address first, for example:
-  /// 'http://192.168.1.10:8000'.
-  static List<String> get baseUrls {
-    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+  static List<String> get baseUrls => resolveBaseUrls();
+
+  static String? get configurationError => baseUrls.isEmpty
+      ? 'The app is not connected to its server. Please contact the app administrator.'
+      : null;
+
+  @visibleForTesting
+  static List<String> resolveBaseUrls({
+    String configuredUrl = _configuredUrl,
+    bool isRelease = kReleaseMode,
+    bool isWeb = kIsWeb,
+    TargetPlatform? platform,
+  }) {
+    final value = configuredUrl.trim().replaceFirst(RegExp(r'/+$'), '');
+    if (value.isNotEmpty) {
+      final uri = Uri.tryParse(value);
+      if (uri == null || !uri.hasAuthority || uri.host.isEmpty ||
+          !['http', 'https'].contains(uri.scheme) ||
+          uri.userInfo.isNotEmpty || uri.hasQuery || uri.hasFragment ||
+          (isRelease && uri.scheme != 'https')) {
+        return [];
+      }
+      return [value];
+    }
+    if (isRelease) return [];
+    if (!isWeb && (platform ?? defaultTargetPlatform) == TargetPlatform.android) {
       return ['http://10.0.2.2:8000', ..._localhost];
     }
     return _localhost;

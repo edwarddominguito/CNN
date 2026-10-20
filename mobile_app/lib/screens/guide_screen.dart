@@ -1,53 +1,44 @@
 import 'package:flutter/material.dart';
 
+import '../content/guide_content.dart';
 import '../widgets/app_cards.dart';
 import '../widgets/app_scaffold.dart';
+import 'guide_topic_screen.dart';
 
-/// Advice on how to photograph a rice sample.
+/// The Guide tab: a short list of learning topics. Each opens its own page, so
+/// this screen stays a clean index rather than a wall of text.
+///
+/// The topics and their order come from guideSections in guide_content.dart.
 class GuideScreen extends StatelessWidget {
   const GuideScreen({super.key});
 
-  // Add a row here and the grid picks it up. Nothing else needs editing.
-  static const _tips = [
-    (
-      Icons.wb_sunny_outlined,
-      'Lighting',
-      'Use bright, even light. Avoid hard shadows and coloured lighting.',
-    ),
-    (
-      Icons.center_focus_strong_outlined,
-      'Framing',
-      'Fill the frame with grains. The model only sees a square crop from the middle of the photo.',
-    ),
-    (
-      Icons.layers_clear_outlined,
-      'Background',
-      'Use a plain surface so the model learns rice quality, not table texture.',
-    ),
-    (
-      Icons.inventory_2_outlined,
-      'One sample',
-      'Photograph one rice sample at a time. Mixing samples in a single photo gives an unreliable grade.',
-    ),
-  ];
-
   @override
   Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+
     return AppNavScaffold(
       currentIndex: 3,
       title: 'Guide',
       body: AppPage(
         children: [
           Text(
-            'Four things that decide whether a prediction is worth trusting.',
-            style: Theme.of(context).textTheme.bodyMedium,
+            'Learn about the rice classes, how to take a suitable photo, and how '
+            'the model reaches its result.',
+            style: textTheme.bodyMedium,
           ),
-          AppCardGrid(
-            children: [
-              for (final (icon, title, text) in _tips)
-                AppInfoCard(icon: icon, title: title, text: text),
-            ],
-          ),
+          for (final (index, section) in guideSections.indexed) ...[
+            Padding(
+              padding: EdgeInsets.only(top: index == 0 ? 0 : 8),
+              child: Text(section.title, style: textTheme.titleMedium),
+            ),
+            for (final topic in section.topics)
+              AppTile(
+                icon: topic.icon,
+                title: topic.title,
+                subtitle: topic.summary,
+                onTap: () => openGuideTopic(context, topic),
+              ),
+          ],
         ],
       ),
     );

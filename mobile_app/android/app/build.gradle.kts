@@ -12,6 +12,23 @@ android {
     // is the only intact NDK. Safe here because no plugin in this app builds native code.
     ndkVersion = "27.0.12077973"
 
+    externalNativeBuild {
+        cmake {
+            // Flutter injects an empty CMake project solely to install the NDK.
+            // Once installed, skip that stub on Windows to avoid sharing
+            // violations in AGP's timing logs. Preserve real native projects.
+            val ndkInstalled = androidComponents.sdkComponents.sdkDirectory.get()
+                .asFile.resolve("ndk/$ndkVersion/source.properties").isFile
+            if (System.getProperty("os.name").startsWith("Windows") &&
+                ndkInstalled &&
+                path?.invariantSeparatorsPath
+                    ?.endsWith("/flutter_tools/gradle/src/main/scripts/CMakeLists.txt") == true
+            ) {
+                path = null
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

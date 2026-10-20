@@ -1,0 +1,32 @@
+# Only application source and the three deployment artifacts enter the build.
+**
+!Dockerfile
+!.dockerignore
+!backend/
+!backend/requirements.txt
+!backend/constraints.txt
+!backend/app/
+!backend/app/**
+!backend/ml/
+!backend/ml/**
+!backend/scripts/
+!backend/scripts/**
+!backend/artifacts/
+!backend/artifacts/model/
+!backend/artifacts/model/rice_cnn_model.keras
+!backend/artifacts/model/class_names.json
+!backend/artifacts/model/metrics.json
+!my-react-app/
+!my-react-app/package.json
+!my-react-app/package-lock.json
+!my-react-app/index.html
+!my-react-app/vite.config.js
+!my-react-app/src/
+!my-react-app/src/**
+!my-react-app/public/
+!my-react-app/public/**
+# Re-exclude generated files even under an allowed source directory.
+**/__pycache__/
+**/*.py[cod]
+**/.env
+**/.env.*

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app_colors.dart';
+import '../content/rice_grades.dart';
 import '../widgets/app_cards.dart';
 import '../widgets/app_scaffold.dart';
 
@@ -8,14 +9,6 @@ import '../widgets/app_scaffold.dart';
 /// runtime, so the screen holds no state.
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key});
-
-  /// The grades the model can predict, written the way a user reads them.
-  static const _grades = [
-    'Premium',
-    'Well-Milled',
-    'Regular-Milled',
-    'Poor-Quality Rice Mix',
-  ];
 
   @override
   Widget build(BuildContext context) {
@@ -26,7 +19,7 @@ class AboutScreen extends StatelessWidget {
       title: 'About',
       body: AppPage(
         children: [
-          Text('Rice Grade Classifier', style: textTheme.titleLarge),
+          Text('Rice Classifier', style: textTheme.titleLarge),
           Text(
             'A mobile application for identifying the grade of rice grains from '
             'a photo. Take or choose a photo on the Scan screen to classify a '
@@ -38,9 +31,10 @@ class AboutScreen extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Column(
               children: [
-                for (var i = 0; i < _grades.length; i++) ...[
+                // The same display names the rest of the app uses.
+                for (var i = 0; i < riceGrades.length; i++) ...[
                   if (i > 0) const Divider(height: 1),
-                  _GradeRow(grade: _grades[i]),
+                  _GradeRow(grade: riceGrades[i].displayName),
                 ],
               ],
             ),

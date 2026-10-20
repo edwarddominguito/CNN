@@ -1,16 +1,17 @@
-# React + Vite
+# Rice classifier web client
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Use Node.js 24 and `npm ci` to install the locked dependencies.
 
-Currently, two official plugins are available:
+For local development, start the backend on port 8000, then run `npm run dev`.
+Vite proxies the API routes to `http://127.0.0.1:8000`. You can override that
+target with `VITE_API_URL=http://YOUR_BACKEND:8000` in `.env.local`.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+For the repository's Railway Docker deployment, leave `VITE_API_URL` empty.
+The backend serves `dist` from the same HTTPS origin as `/predict`.
+For separate hosting, set `VITE_API_URL=https://your-backend.up.railway.app`
+**before building** and allow the frontend origin in backend `CORS_ORIGINS`.
+Vite embeds this public URL in the bundle; it is not a secret or runtime setting.
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Run `npm run lint`, `npm test`, and `npm run build` before deploying.
+Upload requests have a two-minute deadline and accept JPG, PNG, and WebP files
+up to 15 MB. The server validates image contents and model readiness.

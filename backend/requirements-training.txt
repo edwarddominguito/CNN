@@ -1,0 +1,5 @@
+# Install on the training machine, not during application startup.
+-r requirements.txt
+matplotlib==3.11.1
+pillow-heif==1.4.0
+scikit-learn==1.9.0

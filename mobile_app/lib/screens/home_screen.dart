@@ -24,7 +24,7 @@ class HomeScreen extends StatelessWidget {
     (
       Icons.help_outline,
       'Guide',
-      'How to photograph a sample.',
+      'Rice grades, photo tips, and how the model works.',
       '/guide',
     ),
     (
@@ -39,7 +39,7 @@ class HomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return AppNavScaffold(
       currentIndex: 0,
-      title: 'Rice Grader',
+      title: 'Rice Classifier',
       body: AppPage(
         children: [
           Padding(

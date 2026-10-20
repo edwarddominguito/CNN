@@ -1,0 +1,64 @@
+{
+  "accuracy": 36.2,
+  "precision": 32.38,
+  "recall": 36.14,
+  "f1_score": 31.22,
+  "accuracy_std": 22.56,
+  "precision_std": 30.87,
+  "recall_std": 22.56,
+  "f1_score_std": 22.93,
+  "classes": [
+    "Premium",
+    "Well-Milled",
+    "Poor-Quality-Rice-Mix"
+  ],
+  "all_classes": [
+    "Premium",
+    "Well-Milled",
+    "Poor-Quality-Rice-Mix"
+  ],
+  "trained_classes": [
+    "Premium",
+    "Well-Milled",
+    "Poor-Quality-Rice-Mix"
+  ],
+  "reserved_classes": [],
+  "class_status": [
+    {
+      "name": "Premium",
+      "trained": true,
+      "status": "trained"
+    },
+    {
+      "name": "Well-Milled",
+      "trained": true,
+      "status": "trained"
+    },
+    {
+      "name": "Poor-Quality-Rice-Mix",
+      "trained": true,
+      "status": "trained"
+    }
+  ],
+  "per_class": {
+    "Premium": {
+      "precision": 26.46,
+      "recall": 48.41,
+      "f1_score": 33.59
+    },
+    "Well-Milled": {
+      "precision": 21.03,
+      "recall": 10.0,
+      "f1_score": 13.25
+    },
+    "Poor-Quality-Rice-Mix": {
+      "precision": 49.66,
+      "recall": 50.0,
+      "f1_score": 46.81
+    }
+  },
+  "evaluation_method": "Group-aware stratified 5-fold cross-validation",
+  "folds": 5,
+  "evaluation_images": 447,
+  "generated_at": "2026-10-03T10:35:50+00:00"
+}

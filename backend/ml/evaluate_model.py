@@ -15,22 +15,40 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import classification_report, confusion_matrix
 
-from image_preprocessing import CLASS_NAMES
+from ml.image_preprocessing import CLASS_NAMES, load_inference_image
 
 # The four headline scores, in the order the dashboards show them.
 HEADLINE_METRICS = ("accuracy", "precision", "recall", "f1_score")
 
 
-def evaluate_fold(model, dataset, actual_labels, class_names: list) -> dict:
-    """Score one untouched evaluation fold.
+def evaluate_fold(model, image_paths, actual_labels, class_names: list, batch_size=32) -> dict:
+    """Score one untouched evaluation fold exactly the way POST /predict answers.
+
+    Every image goes through image_preprocessing.load_inference_image, the same
+    single deterministic crop the API uses, and the grade is the CNN's argmax. So
+    these scores measure the inference rule the app actually demonstrates.
 
     Macro averaging treats every grade equally, so a rare grade cannot be hidden by
     a common one. zero_division=0 keeps a grade that was never predicted at 0
     instead of crashing.
     """
+    if len(image_paths) == 0 or len(image_paths) != len(actual_labels):
+        raise ValueError("Evaluation requires a non-empty image list with one label per image.")
+    if batch_size < 1:
+        raise ValueError("Evaluation batch size must be at least one.")
     label_ids = range(len(class_names))
-    probabilities = model.predict(dataset, verbose=0)
-    predicted_labels = np.argmax(probabilities, axis=1)
+    # Keep only one small batch in memory rather than stacking the entire test
+    # set. A larger future dataset must not exhaust RAM during evaluation.
+    predictions = []
+    for start in range(0, len(image_paths), batch_size):
+        images = np.stack([
+            load_inference_image(path) for path in image_paths[start:start + batch_size]
+        ])
+        probabilities = np.asarray(model.predict(images, verbose=0))
+        if probabilities.shape != (len(images), len(class_names)) or not np.isfinite(probabilities).all():
+            raise ValueError("The model returned invalid evaluation probabilities.")
+        predictions.extend(np.argmax(probabilities, axis=1).tolist())
+    predicted_labels = np.asarray(predictions)
 
     report = classification_report(
         actual_labels,
@@ -76,9 +94,19 @@ def mean_and_deviation(fold_results: list, key: str) -> tuple:
     return float(values.mean()), deviation
 
 
-def summarize_folds(fold_results: list) -> str:
-    """Readable summary of the five folds, for the console and a text file."""
-    lines = [f"Group-aware stratified {len(fold_results)}-fold cross-validation", ""]
+def summarize_folds(fold_results: list, planned_folds: int) -> str:
+    """Readable summary of the folds run so far, for the console and a text file.
+
+    An interrupted run must not leave a file that reads like a finished study, so
+    a partial summary says so instead of quietly reporting a smaller fold count.
+    """
+    done = len(fold_results)
+    lines = [f"Group-aware stratified {planned_folds}-fold cross-validation", ""]
+    if done < planned_folds:
+        lines[0] += f" - INCOMPLETE: {done} of {planned_folds} folds finished"
+        lines.append("These numbers are a partial run. Do not report them.")
+        lines.append("")
+
     for key in HEADLINE_METRICS:
         mean, deviation = mean_and_deviation(fold_results, key)
         label = key.replace("_", " ").title()
@@ -93,10 +121,10 @@ def write_json(path: Path, payload) -> None:
     pending.replace(path)
 
 
-def save_fold_results(fold_results: list, results_dir: Path) -> str:
+def save_fold_results(fold_results: list, results_dir: Path, planned_folds: int) -> str:
     """Rewritten after every fold, so an interrupted run still leaves results."""
     write_json(results_dir / "cross_validation.json", fold_results)
-    summary = summarize_folds(fold_results)
+    summary = summarize_folds(fold_results, planned_folds)
     (results_dir / "summary.txt").write_text(summary, encoding="utf-8")
     return summary
 
@@ -134,7 +162,7 @@ def average_per_class(fold_results: list, class_name: str, key: str) -> float:
 
 
 def save_dashboard_metrics(fold_results: list, scanned, path: Path) -> None:
-    """Write model/metrics.json, which FastAPI serves at /metrics.
+    """Write artifacts/model/metrics.json, which FastAPI serves at /metrics.
 
     Percent units and key names match what the Flutter and React apps already read,
     so the dashboards pick up cross-validated numbers without any frontend change.
@@ -184,5 +212,5 @@ if __name__ == "__main__":
     raise SystemExit(
         "evaluate_model.py holds the scoring code and is imported by train_5fold.py.\n"
         "Cross-validated results are written by:\n"
-        "  .\\.venv\\Scripts\\python.exe train_5fold.py --dataset dataset --epochs 30"
+        "  .\\.venv\\Scripts\\python.exe -m ml.train_5fold --epochs 30"
     )

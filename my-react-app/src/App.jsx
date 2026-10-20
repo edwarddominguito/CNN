@@ -1,13 +1,11 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import heroImage from "./assets/hero.png";
+import { imageDimensions, predictImage, validateImageFile } from "./api.js";
 import "./App.css";
-
-const API_URL = "http://127.0.0.1:8000";
 
 const GRADE_META = {
   Premium: { tone: "gold", label: "Premium", summary: "Top-grade grains with strong uniformity and visual quality." },
   "Well-Milled": { tone: "green", label: "Well milled", summary: "Cleanly milled grains with good consistency." },
-  "Regular-Milled": { tone: "blue", label: "Regular milled", summary: "Acceptable milling quality with visible variation." },
   "Poor-Quality-Rice-Mix": { tone: "red", label: "Poor quality mix", summary: "Mixed or low-quality grains that need review." },
 };
 
@@ -35,9 +33,36 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef(null);
+  const requestRef = useRef(null);
+  const selectionRef = useRef(0);
 
-  const processFile = (selectedFile) => {
-    if (!selectedFile) return;
+  useEffect(() => () => {
+    requestRef.current?.abort();
+    selectionRef.current++;
+  }, []);
+
+  useEffect(() => () => {
+    if (preview) URL.revokeObjectURL(preview);
+  }, [preview]);
+
+  const processFile = async (selectedFile) => {
+    if (!selectedFile || requestRef.current) return;
+    const selection = ++selectionRef.current;
+    const error = validateImageFile(selectedFile);
+    setFile(null);
+    setPreview(null);
+    setResult(null);
+    if (error) {
+      setResult({ error });
+      return;
+    }
+    try {
+      imageDimensions(await selectedFile.arrayBuffer());
+    } catch (error) {
+      if (selection === selectionRef.current) setResult({ error: error.message || "Unable to read this image." });
+      return;
+    }
+    if (selection !== selectionRef.current) return;
     setFile(selectedFile);
     setPreview(URL.createObjectURL(selectedFile));
     setResult(null);
@@ -47,29 +72,29 @@ function App() {
     event.preventDefault();
     setDragging(false);
     const dropped = event.dataTransfer.files[0];
-    if (dropped?.type.startsWith("image/")) processFile(dropped);
+    processFile(dropped);
   };
 
   const handlePredict = async () => {
-    if (!file) return;
-
-    const formData = new FormData();
-    formData.append("file", file);
+    if (!file || requestRef.current) return;
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
     setResult(null);
 
     try {
-      const response = await fetch(`${API_URL}/predict`, { method: "POST", body: formData });
-      setResult(await response.json());
+      const data = await predictImage(file, { signal: controller.signal });
+      if (!controller.signal.aborted) setResult(data);
     } catch (error) {
-      console.error("Prediction error:", error);
-      setResult({ error: "Prediction failed. Make sure the backend is running." });
+      if (!controller.signal.aborted) setResult({ error: error.message || "Prediction failed. Please try again." });
     } finally {
-      setLoading(false);
+      requestRef.current = null;
+      if (!controller.signal.aborted) setLoading(false);
     }
   };
 
   const handleReset = () => {
+    selectionRef.current++;
     setFile(null);
     setPreview(null);
     setResult(null);
@@ -116,6 +141,7 @@ function App() {
           <button
             type="button"
             className={`upload-zone ${dragging ? "is-dragging" : ""} ${preview ? "has-preview" : ""}`}
+            disabled={loading}
             onClick={() => !preview && inputRef.current?.click()}
             onDrop={handleDrop}
             onDragOver={(event) => {
@@ -143,7 +169,8 @@ function App() {
           <input
             ref={inputRef}
             type="file"
-            accept="image/*"
+            accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+            disabled={loading}
             onChange={(event) => processFile(event.target.files[0])}
             className="hidden-input"
           />

@@ -33,7 +33,7 @@ class PredictionHistoryEntry {
     return {
       'predictedGrade': predictedGrade,
       'confidence': confidence,
-      'createdAt': createdAt.toIso8601String(),
+      'createdAt': createdAt.toUtc().toIso8601String(),
       'imagePath': imagePath,
       'note': note,
       'error': error,

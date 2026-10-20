@@ -6,7 +6,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$backendRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+# scripts/run_backend.ps1 -> scripts/ -> backend/
+$backendRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $python = Join-Path $backendRoot '.venv\Scripts\python.exe'
 $healthHost = '127.0.0.1'
 $baseUrl = "http://${healthHost}:$Port"
@@ -30,13 +31,13 @@ if ($listenerLine) {
     } else {
         try {
             $metrics = Invoke-RestMethod -Uri "$baseUrl/metrics" -TimeoutSec 3
-            $modelState = if ($metrics.model_available) { 'model loaded' } else { 'demo mode' }
+            $modelState = if ($metrics.model_available) { 'model loaded' } else { 'no model loaded' }
             Write-Host "Backend is already running at $baseUrl (PID $processId, $modelState)."
-            Write-Host "Use .\run_backend.ps1 -Restart if you want to restart it."
+            Write-Host "Use .\scripts\run_backend.ps1 -Restart if you want to restart it."
             exit 0
         } catch {
             Write-Host "Port $Port is already in use by PID $processId, but it did not respond as this backend."
-            Write-Host "Stop that process or run .\run_backend.ps1 -Restart."
+            Write-Host "Stop that process or run .\scripts\run_backend.ps1 -Restart."
             exit 1
         }
     }
@@ -45,4 +46,4 @@ if ($listenerLine) {
 Set-Location $backendRoot
 Write-Host "Starting backend on $HostName`:$Port ..."
 Write-Host "Use your device's IPv4 address with port $Port from phones on the same Wi-Fi."
-& $python -m uvicorn main:app --host $HostName --port $Port
+& $python -m uvicorn app.main:app --host $HostName --port $Port

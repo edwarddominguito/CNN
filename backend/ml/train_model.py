@@ -2,8 +2,8 @@
 
 Import this from train_5fold.py. Running it directly does nothing useful, because a
 single train/validation split cannot measure this dataset honestly - there are only
-five batches per grade, so one split would hide most of the variation that the
-five-fold run reports.
+a handful of physical rice samples per grade, so one split would hide most of the
+variation that the grouped five-fold run reports.
 """
 
 import json
@@ -12,10 +12,10 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
-from image_preprocessing import IMAGE_SIZE, make_dataset
+from ml.image_preprocessing import IMAGE_SIZE, make_dataset
 
-# The calibrator in model_calibration.py looks this layer up by name. Renaming it
-# silently disables prediction calibration in the API.
+# model_calibration.py looks this layer up by name when it builds the support
+# embedding cache. Renaming it silently disables that cache.
 EMBEDDING_LAYER_NAME = "rice_embedding"
 
 EARLY_STOPPING_PATIENCE = 5
@@ -121,7 +121,7 @@ def save_atomically(path: Path, write) -> None:
     pending.replace(path)
 
 
-def train_deployment_model(scanned, best_epochs, batch_size: int, seed: int, model_dir: Path):
+def train_deployment_model(scanned, best_epochs, batch_size: int, seed: int, model_path: Path):
     """Train the model FastAPI will serve, using every image in the dataset.
 
     The epoch count is the median best epoch from the five folds, because there is no
@@ -140,7 +140,8 @@ def train_deployment_model(scanned, best_epochs, batch_size: int, seed: int, mod
         verbose=2,
     )
 
-    model_path = model_dir / "rice_cnn_model.keras"
+    model_path = Path(model_path)
+    model_dir = model_path.parent
     save_atomically(model_path, model.save)
     save_atomically(
         model_dir / "class_names.json",
@@ -151,29 +152,32 @@ def train_deployment_model(scanned, best_epochs, batch_size: int, seed: int, mod
     print(f"Saved deployment model: {model_path}")
     print(f"Saved class order: {model_dir / 'class_names.json'}")
 
-    save_calibration_cache(model, scanned)
+    save_calibration_cache(model, scanned, model_dir / "support_embeddings.npz")
     return model
 
 
-def save_calibration_cache(model, scanned) -> None:
-    """Refresh the support embeddings the API uses to calibrate predictions.
+def save_calibration_cache(model, scanned, output_path=None) -> None:
+    """Write artifacts/model/support_embeddings.npz: one embedding per image.
 
-    Imported here rather than at the top so a calibration problem can never stop the
-    model from being saved. The API falls back to raw model output without it.
+    A research side artifact, not part of serving. POST /predict reports the CNN's
+    own class and confidence, so nothing in main.py reads this file. Imported here
+    rather than at the top so a problem building it can never stop the model from
+    being saved.
     """
-    from model_calibration import save_support_embeddings
-
     try:
+        from ml.model_calibration import save_support_embeddings
+
         samples = list(zip(scanned.labels.tolist(), scanned.paths.tolist()))
-        count = save_support_embeddings(model, scanned.class_names, samples=samples)
-        print(f"Saved {count} support embedding(s) for prediction calibration.")
+        kwargs = {"output_path": output_path} if output_path is not None else {}
+        count = save_support_embeddings(model, scanned.class_names, samples=samples, **kwargs)
+        print(f"Saved {count} support embedding(s) (not used by /predict).")
     except Exception as error:
-        print(f"Warning: could not build the calibration cache: {error}")
+        print(f"Warning: could not build the support embedding cache: {error}")
 
 
 if __name__ == "__main__":
     raise SystemExit(
         "train_model.py holds the model code and is imported by train_5fold.py.\n"
         "Run the training with:\n"
-        "  .\\.venv\\Scripts\\python.exe train_5fold.py --dataset dataset --epochs 30"
+        "  .\\.venv\\Scripts\\python.exe -m ml.train_5fold --epochs 30"
     )
