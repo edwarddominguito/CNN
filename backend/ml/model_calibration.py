@@ -9,6 +9,7 @@ main.py reads it.
 """
 
 from pathlib import Path
+from zipfile import BadZipFile
 
 import numpy as np
 import tensorflow as tf
@@ -110,6 +111,7 @@ def save_support_embeddings(
 
 def load_support_embeddings(class_names, path=SUPPORT_EMBEDDINGS_PATH):
     """Return the saved support set, or None if it is missing or unusable."""
+    path = Path(path)
     if not path.exists():
         return None
 
@@ -119,7 +121,7 @@ def load_support_embeddings(class_names, path=SUPPORT_EMBEDDINGS_PATH):
             if saved_names is None or saved_names.tolist() != class_names:
                 return None
             embeddings, labels, paths = data["embeddings"], data["labels"], data["paths"]
-    except (OSError, KeyError, ValueError):
+    except (OSError, KeyError, ValueError, TypeError, EOFError, BadZipFile):
         return None
 
     # Checks are ordered: each one assumes the previous passed.
@@ -128,7 +130,8 @@ def load_support_embeddings(class_names, path=SUPPORT_EMBEDDINGS_PATH):
             embeddings.ndim == 2
             and labels.ndim == paths.ndim == 1
             and len(embeddings) == len(labels) == len(paths)
-            and np.issubdtype(embeddings.dtype, np.number)
+            and (np.issubdtype(embeddings.dtype, np.floating)
+                 or np.issubdtype(embeddings.dtype, np.integer))
             and np.issubdtype(labels.dtype, np.integer)
             and bool(np.all(np.isfinite(embeddings)))
             and not np.any(labels < 0)

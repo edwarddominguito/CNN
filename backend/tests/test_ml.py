@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from zipfile import BadZipFile
 
 import numpy as np
 import tensorflow as tf
@@ -98,6 +99,28 @@ class DatasetTests(unittest.TestCase):
                  paths=np.array([]), embeddings=np.array([[1.0]]))
         self.assertIsNone(model_calibration.load_support_embeddings(["Premium"], target))
 
+    def test_mistyped_corrupt_and_complex_embedding_caches_are_unavailable(self):
+        target = self.root / "cache.npz"
+        with target.open("wb") as stream:
+            np.save(stream, np.array([1, 2, 3]))
+        self.assertIsNone(model_calibration.load_support_embeddings(["Premium"], str(target)))
+        np.savez(target, class_names=np.array(["Premium"]), labels=np.array([0]),
+                 paths=np.array(["file"]), embeddings=np.array([[1 + 2j]]))
+        self.assertIsNone(model_calibration.load_support_embeddings(["Premium"], target))
+        with patch.object(np, "load", side_effect=BadZipFile("CRC mismatch")):
+            self.assertIsNone(model_calibration.load_support_embeddings(["Premium"], target))
+
+    def test_inference_closes_large_pixel_buffers_when_resize_fails(self):
+        image = MagicMock(size=(100, 100))
+        image.__enter__.return_value = image
+        crop = image.crop.return_value.__enter__.return_value
+        crop.resize.side_effect = OSError("resize failed")
+        with patch.object(images, "load_rgb_image", return_value=image):
+            with self.assertRaisesRegex(OSError, "resize failed"):
+                images.load_inference_image("file.png")
+        image.__exit__.assert_called_once()
+        image.crop.return_value.__exit__.assert_called_once()
+
     def test_conversion_refuses_distinct_images_with_same_output_name(self):
         audit = {
             "structural_problems": [],
@@ -114,6 +137,67 @@ class DatasetTests(unittest.TestCase):
 
 
 class TrainingTests(unittest.TestCase):
+    def test_failed_atomic_save_preserves_previous_file_and_removes_staging(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            target = directory / "model.keras"
+            target.write_bytes(b"previous model")
+
+            def failed_save(pending):
+                pending.write_bytes(b"partial new model")
+                raise OSError("disk full")
+
+            with self.assertRaisesRegex(OSError, "disk full"):
+                train_model.save_atomically(target, failed_save)
+            self.assertEqual(target.read_bytes(), b"previous model")
+            self.assertEqual(list(directory.iterdir()), [target])
+
+    def test_overlapping_atomic_writers_have_independent_staging(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "model.keras"
+
+            def outer_save(pending):
+                pending.write_bytes(b"outer")
+                train_model.save_atomically(target, lambda inner: inner.write_bytes(b"inner"))
+
+            train_model.save_atomically(target, outer_save)
+            self.assertEqual(target.read_bytes(), b"outer")
+            self.assertEqual(list(target.parent.iterdir()), [target])
+
+    def test_invalid_metrics_json_never_replaces_previous_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "metrics.json"
+            target.write_text('{"accuracy":36.2}', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                evaluate_model.write_json(target, {"accuracy": float("nan")})
+            self.assertEqual(target.read_text(encoding="utf-8"), '{"accuracy":36.2}')
+            self.assertEqual(list(target.parent.iterdir()), [target])
+
+    def test_failed_plot_write_closes_figure(self):
+        before = evaluate_model.plt.get_fignums()
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "matrix.png"
+            with patch("matplotlib.figure.Figure.savefig", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    evaluate_model.save_confusion_matrix([[1, 0], [0, 1]], ["A", "B"], target, "test")
+        self.assertEqual(evaluate_model.plt.get_fignums(), before)
+
+    def test_evaluation_rejects_invalid_probabilities_and_accepts_partial_grade_set(self):
+        model = MagicMock()
+        outputs = (
+            [[-0.1, 0.6, 0.5]], [[0.1, 0.1, 0.1]], [[float("nan"), 0, 1]],
+            [["invalid", "output", "values"]], [[1 + 2j, 0, 0]], [[1, 0]],
+        )
+        with patch.object(evaluate_model, "load_inference_image", return_value=np.zeros((2, 2, 3), dtype=np.uint8)):
+            for output in outputs:
+                with self.subTest(output=output), self.assertRaisesRegex(ValueError, "probabilit"):
+                    model.predict.return_value = output
+                    evaluate_model.evaluate_fold(model, ["one"], [0], ["A", "B", "C"])
+            model.predict.return_value = [[0.8, 0.1, 0.1]]
+            result = evaluate_model.evaluate_fold(model, ["one"], [0], ["A", "B", "C"])
+        self.assertEqual(result["accuracy"], 1.0)
+        self.assertEqual(result["per_class"]["B"]["support"], 0)
+
     def test_failed_final_training_preserves_existing_dashboard_metrics(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

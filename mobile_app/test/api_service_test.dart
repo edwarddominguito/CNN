@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:mobile_app/models/prediction_history_entry.dart';
 import 'package:mobile_app/services/api_config.dart';
+import 'package:mobile_app/services/image_validation.dart';
 import 'package:mobile_app/services/rice_api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -33,6 +34,11 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  test('animated PNG files are rejected before creating a live preview', () async {
+    final bytes = base64Decode('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACGFjVEwAAAACAAAAAPONk3AAAAAaZmNUTAAAAAAAAAACAAAAAgAAAAAAAAAAAAEACgAA6FTcAAAAABBJREFUeJxj/M8AAkxgkgEADR0BA4LJcf8AAAAaZmNUTAAAAAEAAAACAAAAAgAAAAAAAAAAAAEACgAAcyc21AAAABZmZEFUAAAAAnicY2Rg+M/AwMDEAAYACx8BAyVgX34AAAAASUVORK5CYII=');
+    expect(await validateImage('rice.png', bytes), contains('Animated'));
+  });
+
   test('history timestamps include UTC and preserve the original instant', () {
     final original = DateTime(2026, 1, 2, 11, 4, 5);
     final entry = PredictionHistoryEntry(
@@ -44,15 +50,17 @@ void main() {
     expect(PredictionHistoryEntry.fromJson(entry.toJson()).createdAt.isAtSameMomentAs(original), isTrue);
   });
 
-  test('release builds use only a configured HTTPS backend', () {
-    expect(ApiConfig.resolveBaseUrls(isRelease: true), isEmpty);
+  test('debug and release builds default to Railway and validate overrides', () {
+    const railway = ['https://cnn-production-c269.up.railway.app'];
+    expect(ApiConfig.resolveBaseUrls(isRelease: false), railway);
+    expect(ApiConfig.resolveBaseUrls(isRelease: true), railway);
+    expect(ApiConfig.resolveBaseUrls(configuredUrl: '', isRelease: false), isEmpty);
+    expect(ApiConfig.resolveBaseUrls(configuredUrl: '', isRelease: true), isEmpty);
     expect(ApiConfig.resolveBaseUrls(configuredUrl: 'http://localhost:8000', isRelease: true), isEmpty);
     expect(ApiConfig.resolveBaseUrls(configuredUrl: 'https://rice.up.railway.app/', isRelease: true), hosts);
     for (final url in ['bad address', 'file:///tmp', 'https://user:password@rice.test', 'https://rice.test?q=1']) {
       expect(ApiConfig.resolveBaseUrls(configuredUrl: url, isRelease: true), isEmpty);
     }
-    expect(ApiConfig.resolveBaseUrls(isRelease: false, isWeb: false, platform: TargetPlatform.android).first,
-        'http://10.0.2.2:8000');
   });
 
   test('predict uploads multipart, reads real percentages, and closes the client', () async {
@@ -133,7 +141,53 @@ void main() {
     final client = TrackingClient((request) async => http.Response('[]', 200));
     expect((await service(client).getHistory()).single.predictedGrade, 'Premium');
     expect((await offline.getHistory()).single.predictedGrade, 'Premium');
-    await offline.clearHistory();
-    expect(await offline.getHistory(), isEmpty);
+    expect(await offline.clearHistory(), isFalse);
+    expect((await offline.getHistory()).single.predictedGrade, 'Premium');
+  });
+
+  test('failed remote deletion preserves downloaded and unsaved history', () async {
+    const row = '{"predictedGrade":"Premium","confidence":98.7,"createdAt":"2026-01-02T03:04:05Z"}';
+    SharedPreferences.setMockInitialValues({
+      'prediction_history': [row], 'unsaved_prediction_history': [row],
+    });
+    final api = service(TrackingClient((request) async => http.Response('Unavailable', 503)));
+    expect(await api.clearHistory(), isFalse);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getStringList('prediction_history'), [row]);
+    expect(prefs.getStringList('unsaved_prediction_history'), [row]);
+  });
+
+  test('simultaneous offline saves from different screens retain both records', () async {
+    final first = RiceApiService(baseUrls: []);
+    final second = RiceApiService(baseUrls: []);
+    PredictionHistoryEntry entry(int day) => PredictionHistoryEntry(
+      predictedGrade: 'Premium', confidence: 98.7, createdAt: DateTime.utc(2026, 1, day),
+    );
+    await Future.wait([
+      first.saveUnsavedPrediction(entry(1)), second.saveUnsavedPrediction(entry(2)),
+    ]);
+    expect(await first.getHistory(), hasLength(2));
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getStringList('unsaved_prediction_history'), hasLength(2));
+  });
+
+  test('a history refresh cannot resurrect records after a successful clear', () async {
+    final reply = Completer<http.Response>();
+    final started = Completer<void>();
+    final api = RiceApiService(baseUrls: hosts, clientFactory: () => TrackingClient((request) async {
+      if (request.method == 'DELETE') return http.Response('{}', 200);
+      started.complete();
+      return reply.future;
+    }));
+    final refreshing = api.getHistory();
+    await started.future;
+    final clearing = api.clearHistory();
+    await Future<void>.delayed(Duration.zero);
+    reply.complete(http.Response(jsonEncode([
+      {'predictedGrade': 'Premium', 'confidence': 98.7, 'createdAt': '2026-01-02T03:04:05Z'},
+    ]), 200));
+    await refreshing;
+    await clearing;
+    expect(await RiceApiService(baseUrls: []).getHistory(), isEmpty);
   });
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -34,6 +35,22 @@ class RiceApiService {
   static const _historyKey = 'prediction_history';
   static const _unsavedHistoryKey = 'unsaved_prediction_history';
   static const _historyLimit = 25;
+  // Screens use separate service instances but share the same local store.
+  static Completer<void>? _historyOperation;
+
+  Future<T> _withHistoryLock<T>(Future<T> Function() operation) async {
+    while (_historyOperation != null) {
+      await _historyOperation!.future;
+    }
+    final release = Completer<void>();
+    _historyOperation = release;
+    try {
+      return await operation();
+    } finally {
+      _historyOperation = null;
+      release.complete();
+    }
+  }
 
   /// Uploads the picked image to POST /predict and returns the model's answer.
   ///
@@ -79,8 +96,8 @@ class RiceApiService {
   }
 
   /// The backend's history when it is reachable, otherwise the phone's copy.
-  Future<List<PredictionHistoryEntry>> getHistory() async {
-    final entries = await _tryEachHost<List<PredictionHistoryEntry>>((baseUrl, client) async {
+  Future<List<PredictionHistoryEntry>> getHistory() => _withHistoryLock(() async {
+    final remoteEntries = await _tryEachHost<List<PredictionHistoryEntry>>((baseUrl, client) async {
       final response = await client
           .get(Uri.parse('$baseUrl/history?limit=$_historyLimit'))
           .timeout(_quickTimeout);
@@ -93,24 +110,24 @@ class RiceApiService {
         return null;
       }
 
-      final remoteEntries = decoded
+      return decoded
           .whereType<Map<String, dynamic>>()
           .map(PredictionHistoryEntry.fromJson)
           .toList();
-      final entries = [
-        ...remoteEntries,
-        ...await _readLocalHistory(key: _unsavedHistoryKey),
-      ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-      await _writeLocalHistory(entries);
-      return entries.take(_historyLimit).toList();
     });
 
-    return entries ?? await _readLocalHistory();
-  }
+    if (remoteEntries == null) return _readLocalHistory();
+    final entries = [
+      ...remoteEntries,
+      ...await _readLocalHistory(key: _unsavedHistoryKey),
+    ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    await _writeLocalHistory(entries);
+    return entries.take(_historyLimit).toList();
+  });
 
   /// Saves a client failure or a prediction left unsaved by a database outage.
   /// Only call this when [PredictionResult.savedByBackend] is false.
-  Future<void> saveUnsavedPrediction(PredictionHistoryEntry entry) async {
+  Future<void> saveUnsavedPrediction(PredictionHistoryEntry entry) => _withHistoryLock(() async {
     final saved = await _tryEachHost<bool>((baseUrl, client) async {
       final response = await client
           .post(
@@ -127,17 +144,20 @@ class RiceApiService {
       await _writeLocalHistory(unsaved, key: _unsavedHistoryKey);
     }
     await _writeLocalHistory([entry, ...await _readLocalHistory()]);
-  }
+  });
 
-  Future<void> clearHistory() async {
-    await _tryEachHost<bool>((baseUrl, client) async {
+  /// Failed server deletion must preserve the local copies for a later retry.
+  Future<bool> clearHistory() => _withHistoryLock(() async {
+    final cleared = await _tryEachHost<bool>((baseUrl, client) async {
       final response = await client.delete(Uri.parse('$baseUrl/history')).timeout(_quickTimeout);
       return response.statusCode == 200 ? true : null;
     });
 
+    if (cleared != true) return false;
     await _writeLocalHistory([]);
     await _writeLocalHistory([], key: _unsavedHistoryKey);
-  }
+    return true;
+  });
 
   /// Runs [sendRequest] against each address from [ApiConfig] until one of them
   /// gives an answer. Returns null when none of them work.

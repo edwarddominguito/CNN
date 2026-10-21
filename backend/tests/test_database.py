@@ -1,4 +1,5 @@
 import os
+from contextlib import ExitStack
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -63,6 +64,39 @@ class DatabaseTests(unittest.TestCase):
         connection.commit.assert_not_called()
         connection.rollback.assert_called_once()
         connection.close.assert_called_once()
+
+    def test_capacity_is_bounded_and_recovers_when_connections_close(self):
+        with patch.object(database.mysql.connector, "connect", side_effect=lambda **config: MagicMock()) as connect:
+            with ExitStack() as connections:
+                for _ in range(4):
+                    connections.enter_context(database.get_connection())
+                with self.assertRaises(database.DatabaseBusyError):
+                    with database.get_connection():
+                        self.fail("An excess connection must not be opened.")
+                self.assertEqual(connect.call_count, 4)
+            with database.get_connection():
+                pass
+            self.assertEqual(connect.call_count, 5)
+
+    def test_failed_connect_does_not_leak_capacity(self):
+        with patch.object(database.mysql.connector, "connect", side_effect=OSError("offline")):
+            for _ in range(8):
+                with self.assertRaises(OSError):
+                    with database.get_connection():
+                        pass
+        with patch.object(database.mysql.connector, "connect", return_value=MagicMock()):
+            with database.get_connection():
+                pass
+
+    def test_cleanup_failure_preserves_original_error_and_frees_capacity(self):
+        connection = MagicMock()
+        connection.rollback.side_effect = OSError("rollback failed")
+        connection.close.side_effect = OSError("close failed")
+        with patch.object(database.mysql.connector, "connect", return_value=connection):
+            for _ in range(8):
+                with self.assertRaisesRegex(RuntimeError, "original operation failed"):
+                    with database.get_connection():
+                        raise RuntimeError("original operation failed")
 
 
 if __name__ == "__main__":

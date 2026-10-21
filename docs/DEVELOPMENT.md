@@ -68,8 +68,9 @@ backend/.venv/Scripts/python.exe -m pip install -r backend/requirements-dev.txt
 
 `requirements.txt` installs the API runtime. `requirements-training.txt` adds the
 training, evaluation, and HEIC conversion dependencies. `requirements-dev.txt`
-also includes HTTPX for API regression tests. `constraints.txt` pins the dependency
-versions checked against the local environment. Linux x86-64 uses TensorFlow CPU
+also includes HTTPX for API regression tests. Docker and CI apply `constraints.txt`
+explicitly to keep the validated dependencies reproducible; a local constrained
+install can add `-c backend/constraints.txt` to the command above. Linux x86-64 uses TensorFlow CPU
 2.21.0; other supported platforms use TensorFlow 2.21.0.
 
 Configure a reachable MySQL server before running the API. Use `MYSQL_URL` or the
@@ -94,6 +95,11 @@ Or run the production entry point from `backend`:
 It listens at `0.0.0.0` using `PORT` (default 8000), with one worker and bounded
 connection concurrency. If MySQL is unavailable at startup, the process remains
 live and later requests can retry the database connection.
+
+At most four database operations hold connections at a time. Excess work gets a
+retryable 503, and only one request retries database initialization after an
+outage. `/health` remains responsive without an available worker thread. Model
+startup also runs one bounded inference check before reporting it available.
 
 Run backend tests and dataset preflight from `backend`:
 
@@ -120,9 +126,10 @@ browser origin; a separately hosted web client can set `VITE_API_URL` at build
 time. Development API proxy behavior is configured in `vite.config.js`.
 
 From `mobile_app`, run `flutter run`, `flutter analyze`, and `flutter test`.
-Development defaults include Android emulator `http://10.0.2.2:8000` and desktop
-localhost URLs. For a real phone or deployment, supply the address at build/run
-time instead of editing source:
+Debug and release builds default to `https://cnn-production-c269.up.railway.app`.
+To use another server, supply the address at build/run time instead of editing
+source. Local development can use the computer's LAN address, desktop localhost,
+or Android emulator `http://10.0.2.2:8000`:
 
 ```powershell
 flutter run --dart-define=API_BASE_URL=http://YOUR-LAN-IP:8000
@@ -154,6 +161,11 @@ An unavailable model or busy inference slot returns 503. Oversized requests retu
 unexpected inference failure returns 500. Temporary files are removed on all
 completed prediction paths. The API rejects invalid/nonfinite model outputs and
 large decoded images instead of returning a fabricated grade.
+
+Unavailable temporary upload storage returns a retryable 503. Large request
+spooling runs outside the event loop, so slow disk writes do not block liveness
+checks. The Flutter client preserves local history when a remote clear fails,
+and serializes history updates so simultaneous saves cannot overwrite records.
 
 The history API has no user login or per-user separation. Add an appropriate
 access layer before exposing sensitive/shared history to untrusted users. This

@@ -5,6 +5,10 @@ from tempfile import SpooledTemporaryFile
 from threading import BoundedSemaphore
 
 from starlette.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException
+
+STORAGE_ERROR_DETAIL = "Temporary upload storage is unavailable. Please try again later."
 
 
 class RequestLimitsMiddleware:
@@ -19,7 +23,7 @@ class RequestLimitsMiddleware:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
 
-        prediction = scope["path"] == "/predict" and scope["method"] == "POST"
+        prediction = scope["path"].rstrip("/") == "/predict" and scope["method"] == "POST"
         acquired = prediction and self.prediction_slot.acquire(blocking=False)
         if prediction and not acquired:
             return await JSONResponse(
@@ -28,6 +32,7 @@ class RequestLimitsMiddleware:
                 headers={"Retry-After": "2"},
             )(scope, receive, send)
 
+        downstream_started = False
         try:
             # Multipart overhead gets a separate allowance; the endpoint still
             # enforces the exact 15 MiB file limit. Other writes have a 64 KiB cap.
@@ -67,22 +72,50 @@ class RequestLimitsMiddleware:
                     size += len(chunk)
                     if size > limit:
                         return await self.too_large(scope, receive, send)
-                    body.write(chunk)
+                    if size > 1024 * 1024:
+                        await run_in_threadpool(body.write, chunk)
+                    else:
+                        body.write(chunk)
                     if not message.get("more_body", False):
                         break
-                body.seek(0)
+                if size > 1024 * 1024:
+                    await run_in_threadpool(body.seek, 0)
+                else:
+                    body.seek(0)
                 replay_complete = False
 
                 async def replay():
                     nonlocal replay_complete
                     if replay_complete:
                         return await receive()
-                    chunk = body.read(64 * 1024)
+                    try:
+                        if size > 1024 * 1024:
+                            chunk = await run_in_threadpool(body.read, 64 * 1024)
+                        else:
+                            chunk = body.read(64 * 1024)
+                    except OSError as error:
+                        # This runs inside Starlette's request parser, whose
+                        # exception handler preserves this retryable status.
+                        raise HTTPException(
+                            status_code=503, detail=STORAGE_ERROR_DETAIL,
+                            headers={"Retry-After": "2"},
+                        ) from error
                     more = body.tell() < size
                     replay_complete = not more
                     return {"type": "http.request", "body": chunk, "more_body": more}
 
+                downstream_started = True
                 await self.app(scope, replay, send)
+        except OSError:
+            if downstream_started:
+                raise
+            # Disk exhaustion/permissions must not leak a temporary handle or
+            # strand the classifier slot. A later request can recover normally.
+            return await JSONResponse(
+                {"detail": STORAGE_ERROR_DETAIL},
+                status_code=503,
+                headers={"Retry-After": "2"},
+            )(scope, receive, send)
         finally:
             if acquired:
                 self.prediction_slot.release()

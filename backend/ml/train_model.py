@@ -7,6 +7,8 @@ variation that the grouped five-fold run reports.
 """
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -115,10 +117,23 @@ def start_fresh_model(num_classes: int, seed: int) -> tf.keras.Model:
 
 def save_atomically(path: Path, write) -> None:
     """Write to a .pending file first, so a crash cannot leave the API half a file."""
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    pending = path.with_suffix(f".pending{path.suffix}")
-    write(pending)
-    pending.replace(path)
+    descriptor, filename = tempfile.mkstemp(
+        prefix=f"{path.stem}.", suffix=f".pending{path.suffix}", dir=path.parent
+    )
+    os.close(descriptor)
+    pending = Path(filename)
+    try:
+        write(pending)
+        pending.replace(path)
+    finally:
+        # A failed Keras save can leave megabytes behind. Unique staging also
+        # prevents two writers from replacing one another's in-progress file.
+        try:
+            pending.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def train_deployment_model(scanned, best_epochs, batch_size: int, seed: int, model_path: Path):

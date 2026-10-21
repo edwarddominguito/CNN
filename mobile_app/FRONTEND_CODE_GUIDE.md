@@ -95,30 +95,14 @@ of the app — they live in `docs/DEVELOPMENT.md` and the results files.
 ## 4. Services
 
 ### services/api_config.dart
-The **only** place the backend address is selected. Production builds use
-`--dart-define=API_BASE_URL=https://your-backend.up.railway.app` and require
-HTTPS. Debug builds without that setting keep the local defaults below.
+The **only** place the backend address is selected. All builds default to
+`https://cnn-production-c269.up.railway.app`. Override it with
+`--dart-define=API_BASE_URL=https://your-backend.up.railway.app`; release builds
+require HTTPS. Only the selected address is used, with no localhost fallback.
 
-```dart
-static List<String> get baseUrls {
-  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-    return ['http://10.0.2.2:8000', ..._localhost];
-  }
-  return _localhost;
-}
-```
-
-Why a list and not one address? Because the correct address depends on where
-the app runs:
-
-| Where the app runs | Address that works |
-| --- | --- |
-| Android emulator | `http://10.0.2.2:8000` |
-| Chrome / Windows desktop | `http://127.0.0.1:8000` |
-| Real phone on the same Wi-Fi | `http://YOUR_PC_IP:8000` (add it first in the list) |
-
-The app tries the debug addresses in order and uses the first one that answers.
-When `API_BASE_URL` is set, only that address is used, with no localhost fallback.
+For local development, explicitly use `http://10.0.2.2:8000` on an Android
+emulator, `http://127.0.0.1:8000` on desktop/web, or the computer's LAN address
+on a physical phone. HTTP overrides are allowed only in debug builds.
 
 ### services/rice_api_service.dart
 All backend communication, in one class:
@@ -128,7 +112,7 @@ All backend communication, in one class:
 | `predictRiceGrade(image)` | uploads a photo, returns the grade | `POST /predict` |
 | `getHistory()` | past predictions | `GET /history` |
 | `saveUnsavedPrediction(entry)` | records an answer the backend did not save | `POST /history` |
-| `clearHistory()` | deletes everything | `DELETE /history` |
+| `clearHistory()` | returns true after confirmed deletion; otherwise keeps local history | `DELETE /history` |
 
 Inside, one small private helper is reused by all of them:
 
@@ -146,6 +130,10 @@ When the backend cannot be reached, history falls back to a small copy saved on
 the phone with `shared_preferences`. The `history_saved` response flag also
 preserves valid predictions when the backend's database is unavailable.
 Those unsaved entries remain local when the server history is refreshed.
+History operations share a lock across service instances so concurrent screens
+cannot lose saves or restore an old refresh after a confirmed clear. Cache
+writes happen outside timed network callbacks. Unsaved prediction results are
+queued even when the Scan screen was closed while waiting for the backend.
 
 ### services/image_validation.dart
 One function, `validateImage(fileName, bytes)`. It returns `null` when the image

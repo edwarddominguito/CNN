@@ -41,6 +41,9 @@ Future<String?> validateImage(String fileName, Uint8List bytes) async {
         // A small decode checks readability without allocating a full camera frame.
         final codec = await descriptor.instantiateCodec(targetWidth: 512, targetHeight: 512);
         try {
+          if (codec.frameCount != 1) {
+            return 'Animated images are not supported. Please select a single still image.';
+          }
           final frame = await codec.getNextFrame();
           frame.image.dispose();
         } finally {

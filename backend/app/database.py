@@ -1,11 +1,19 @@
 import os
+import logging
 from contextlib import contextmanager
+from threading import BoundedSemaphore
 from urllib.parse import unquote, urlsplit
 
 import mysql.connector
 
 DATABASE_TIMEOUT_SECONDS = 5
 MAX_HISTORY_LIMIT = 200
+connection_slots = BoundedSemaphore(4)
+logger = logging.getLogger("rice_backend.database")
+
+
+class DatabaseBusyError(RuntimeError):
+    """All bounded connection slots are in use; callers should retry later."""
 
 def mysql_config():
     """Read Railway's URL or service variables without exposing credentials in logs.
@@ -62,21 +70,37 @@ FIELDS = {
 @contextmanager
 def get_connection():
     """One connection per call: committed when the block ends, always closed."""
-    connection = mysql.connector.connect(
-        **mysql_config(),
-        connection_timeout=DATABASE_TIMEOUT_SECONDS,
-        read_timeout=10,
-        write_timeout=10,
-        time_zone="+00:00",
-    )
+    if not connection_slots.acquire(blocking=False):
+        raise DatabaseBusyError("The history database is busy. Please try again shortly.")
+    connection = None
     try:
+        connection = mysql.connector.connect(
+            **mysql_config(),
+            connection_timeout=DATABASE_TIMEOUT_SECONDS,
+            read_timeout=10,
+            write_timeout=10,
+            time_zone="+00:00",
+        )
         yield connection
         connection.commit()
     except Exception:
-        connection.rollback()
+        if connection is not None:
+            try:
+                connection.rollback()
+            except Exception:
+                # A lost connection often cannot roll back. Preserve the query's
+                # original exception rather than replacing it with cleanup noise.
+                logger.warning("Could not roll back a failed database operation.")
         raise
     finally:
-        connection.close()
+        try:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    logger.warning("Could not close a database connection cleanly.")
+        finally:
+            connection_slots.release()
 
 
 def init_database():

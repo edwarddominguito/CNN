@@ -89,7 +89,8 @@ def load_rgb_image(image_path):
             raise ValueError("Animated or multiple-frame images are not supported.")
         # load() catches truncated JPEG files that Pillow's verify() can accept.
         source.load()
-        return ImageOps.exif_transpose(source).convert("RGB")
+        with ImageOps.exif_transpose(source) as oriented:
+            return oriented.convert("RGB")
 
 
 def load_inference_image(image_path):
@@ -102,18 +103,16 @@ def load_inference_image(image_path):
     EXIF orientation is applied, because a phone writes a sideways photo with a
     rotation flag rather than rotated pixels.
     """
-    image = load_rgb_image(image_path)
-
-    width, height = image.size
-    side = max(1, int(min(width, height) * PREDICTION_CROP_SCALE))
-    left = (width - side) // 2
-    top = (height - side) // 2
-    crop = image.crop((left, top, left + side, top + side))
-
-    # The filter is named rather than left to a library default, so the same file
-    # always produces the same pixels. Pillow scales the filter to the resize
-    # factor, so shrinking a large crop is already anti-aliased.
-    return np.array(crop.resize(IMAGE_SIZE, Image.Resampling.BILINEAR), dtype=np.uint8)
+    with load_rgb_image(image_path) as image:
+        width, height = image.size
+        side = max(1, int(min(width, height) * PREDICTION_CROP_SCALE))
+        left = (width - side) // 2
+        top = (height - side) // 2
+        # Close each pixel buffer even if resize/array allocation fails.
+        with image.crop((left, top, left + side, top + side)) as crop:
+            # Name the filter so the same file always produces the same pixels.
+            with crop.resize(IMAGE_SIZE, Image.Resampling.BILINEAR) as resized:
+                return np.array(resized, dtype=np.uint8)
 
 
 def is_image(path: Path) -> bool:

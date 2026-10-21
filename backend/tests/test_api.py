@@ -6,9 +6,10 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
+import anyio.to_thread
 import numpy as np
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -71,6 +72,17 @@ class ApiTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 400)
                 self.assert_no_uploads()
 
+    def test_temporary_request_read_failure_is_retryable_and_recovers(self):
+        class UnreadableSpool(io.BytesIO):
+            def read(self, size=-1):
+                raise OSError("temporary disk read failed")
+        with patch("app.middleware.SpooledTemporaryFile", side_effect=lambda **options: UnreadableSpool()):
+            response = self.client.post("/predict", files={"file": ("rice.png", png())})
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.headers["Retry-After"], "2")
+        self.assertEqual(self.client.post("/predict", files={"file": ("rice.png", png())}).status_code, 200)
+        self.assert_no_uploads()
+
     def test_oversized_file_and_declared_request_are_413(self):
         response = self.client.post("/predict", files={"file": ("rice.jpg", b"x" * (main.MAX_UPLOAD_BYTES + 1))})
         self.assertEqual(response.status_code, 413)
@@ -88,7 +100,11 @@ class ApiTests(unittest.TestCase):
         self.assert_no_uploads()
 
     def test_inference_failure_and_invalid_probabilities_are_contained(self):
-        for output in (np.array([[np.nan, 0.5, 0.5]]), np.array([[1.2, -0.1, -0.1]]), np.array([[0.1, 0.1]])):
+        for output in (
+            np.array([[np.nan, 0.5, 0.5]]), np.array([[1.2, -0.1, -0.1]]),
+            np.array([[0.1, 0.1]]), np.array([[0.5 + 1j, 0.5 - 1j, 0]]),
+            np.array([[True, False, False]]),
+        ):
             with self.subTest(output=output), patch.object(main, "model", return_value=output):
                 response = self.client.post("/predict", files={"file": ("rice.png", png())})
                 self.assertEqual(response.status_code, 500)
@@ -114,6 +130,40 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(self.client.get("/ready").status_code, 503)
         main.DATABASE_RETRY_AT = 0
         self.assertEqual(self.client.get("/ready").status_code, 200)
+
+    def test_busy_database_is_retryable_without_marking_it_offline(self):
+        with patch.object(main.database, "list_predictions", side_effect=main.database.DatabaseBusyError("Database is busy")):
+            response = self.client.get("/history")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.headers["Retry-After"], "2")
+        self.assertTrue(main.DATABASE_AVAILABLE)
+
+    def test_parallel_database_recovery_does_not_wait_on_a_worker_lock(self):
+        main.DATABASE_AVAILABLE = False
+        with main.database_lock:
+            self.assertFalse(main.init_database())
+        main.database.init_database.assert_called_once()  # only the lifespan call
+
+    def test_liveness_remains_available_when_worker_threads_are_full(self):
+        async def scenario():
+            limiter = anyio.to_thread.current_default_thread_limiter()
+            original_tokens = limiter.total_tokens
+            limiter.total_tokens = 1
+            await limiter.acquire()
+            try:
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+                    response = await asyncio.wait_for(client.get("/health"), timeout=1)
+                    self.assertEqual(response.status_code, 200)
+            finally:
+                limiter.release()
+                limiter.total_tokens = original_tokens
+        asyncio.run(scenario())
+
+    def test_trailing_slash_prediction_keeps_the_normal_image_limit(self):
+        body = png() + b"padding" * 10000
+        response = self.client.post("/predict/", files={"file": ("rice.png", body)})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assert_no_uploads()
 
     def test_ready_checks_components_and_health_remains_live(self):
         self.assertEqual(self.client.get("/ready").status_code, 200)
@@ -215,6 +265,30 @@ class RealModelTests(unittest.TestCase):
 
 
 class ModelLoadingTests(unittest.TestCase):
+    def test_artifact_permission_failure_does_not_stop_the_server(self):
+        unavailable = Mock(spec=Path)
+        unavailable.is_file.side_effect = PermissionError("model volume is not readable")
+        with patch.object(main, "MODEL_PATH", unavailable):
+            model, message = main.load_model()
+        self.assertIsNone(model)
+        self.assertIn("permissions", message)
+
+    def test_startup_refuses_a_model_that_fails_real_inference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "rice.keras"
+            model_path.write_bytes(b"stubbed weight file")
+            names_path = Path(directory) / "class_names.json"
+            names_path.write_text('["Premium","Well-Milled","Poor-Quality-Rice-Mix"]', encoding="utf-8")
+            with patch.object(main, "MODEL_PATH", model_path), patch.object(main, "CLASS_NAMES_PATH", names_path):
+                for probabilities in (np.array([[np.nan, 0.5, 0.5]]), np.array([[1.5, -0.5, 0]])):
+                    class InvalidModel(FakeModel):
+                        def __call__(self, image, training=False):
+                            return probabilities
+                    with patch.object(main.tf.keras.models, "load_model", return_value=InvalidModel()):
+                        model, message = main.load_model()
+                        self.assertIsNone(model)
+                        self.assertIn("startup inference", message)
+
     def test_missing_corrupt_and_pointer_model_artifacts_are_not_served(self):
         with tempfile.TemporaryDirectory() as directory:
             model_path = Path(directory) / "rice.keras"

@@ -13,6 +13,8 @@ import time
 import urllib.error
 import urllib.request
 import zlib
+from html.parser import HTMLParser
+from urllib.parse import urlsplit
 
 
 def request(base_url, path, *, data=None, headers=None, timeout=10):
@@ -29,6 +31,49 @@ def get_json(base_url, path):
     if status != 200:
         raise RuntimeError(f"{path} returned HTTP {status}.")
     return json.loads(body)
+
+
+class WebAssets(HTMLParser):
+    """Read the local JavaScript and CSS referenced by the built Vite page."""
+
+    def __init__(self):
+        super().__init__()
+        self.assets = {}
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if tag == "script":
+            source = attributes.get("src")
+            kind = "javascript"
+        elif tag == "link" and "stylesheet" in (attributes.get("rel") or "").split():
+            source = attributes.get("href")
+            kind = "css"
+        else:
+            return
+        if not source:
+            return
+        parsed = urlsplit(source)
+        if not parsed.scheme and not parsed.netloc and parsed.path.startswith("/assets/"):
+            self.assets[source] = kind
+
+
+def check_web_client(base_url):
+    status, headers, body = request(base_url, "/")
+    if status != 200 or "text/html" not in headers.get("Content-Type", "") or b"<html" not in body.lower():
+        raise RuntimeError("The built React application is not being served at /.")
+    page = WebAssets()
+    page.feed(body.decode("utf-8"))
+    if "javascript" not in page.assets.values():
+        raise RuntimeError("The web page does not reference a local application JavaScript bundle.")
+    for path, kind in page.assets.items():
+        status, headers, body = request(base_url, path)
+        content_type = headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        allowed = {"text/css"} if kind == "css" else {"text/javascript", "application/javascript"}
+        if status != 200 or not body or content_type not in allowed:
+            raise RuntimeError(f"The web {kind} asset {path} is missing or has an invalid content type.")
+    for path in ("/assets/__deployment_smoke_missing__.js", "/predict/__deployment_smoke_missing__"):
+        if request(base_url, path)[0] != 404:
+            raise RuntimeError(f"Missing resource {path} must return HTTP 404.")
 
 
 def wait_until_ready(base_url, wait_seconds):
@@ -132,9 +177,7 @@ def main():
     history = get_json(base_url, "/history?limit=1")
     if not isinstance(history, list) or len(history) > 1:
         raise RuntimeError("/history returned an invalid page.")
-    status, headers, body = request(base_url, "/")
-    if status != 200 or "text/html" not in headers.get("Content-Type", "") or b"<html" not in body.lower():
-        raise RuntimeError("The built React application is not being served at /.")
+    check_web_client(base_url)
     if args.exercise_prediction:
         exercise_prediction(base_url, classes)
     print("Deployment smoke checks passed" + (" (one synthetic prediction saved)." if args.exercise_prediction else "."))

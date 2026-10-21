@@ -20,7 +20,7 @@ ENV PYTHONUNBUFFERED=1 \
     MPLCONFIGDIR=/tmp/matplotlib
 WORKDIR /app/backend
 COPY backend/requirements.txt backend/constraints.txt ./
-RUN python -m pip install --only-binary=:all: -r requirements.txt \
+RUN python -m pip install --only-binary=:all: -c constraints.txt -r requirements.txt \
     && python -m pip check
 COPY backend/app/ ./app/
 COPY backend/ml/ ./ml/

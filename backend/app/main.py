@@ -108,7 +108,13 @@ def read_json(path, fallback):
 
 def init_database():
     global DATABASE_AVAILABLE, DATABASE_RETRY_AT
-    with database_lock:
+    if DATABASE_AVAILABLE:
+        return True
+    # Only one request retries a failed connection; other requests return 503
+    # promptly instead of occupying every worker while waiting for this lock.
+    if not database_lock.acquire(blocking=False):
+        return False
+    try:
         if DATABASE_AVAILABLE:
             return True
         if time.monotonic() < DATABASE_RETRY_AT:
@@ -120,6 +126,8 @@ def init_database():
             DATABASE_RETRY_AT = time.monotonic() + 5
             logger.exception("Prediction history database is unavailable.")
         return DATABASE_AVAILABLE
+    finally:
+        database_lock.release()
 
 
 def model_rejection(loaded_model, saved_names):
@@ -162,11 +170,18 @@ def load_model():
     Never raises, so a missing or incompatible model cannot stop the server from
     starting - /predict then answers 503 rather than inventing a grade.
     """
-    if not MODEL_PATH.exists():
+    try:
+        model_exists = MODEL_PATH.is_file()
+        labels_exist = CLASS_NAMES_PATH.is_file()
+    except OSError:
+        logger.exception("Could not inspect the model artifacts.")
+        return None, "The trained model artifacts are unavailable. Check their location and permissions."
+
+    if not model_exists:
         logger.warning("No CNN model found. /predict will answer 503 until one exists.")
         return None, None
 
-    if not CLASS_NAMES_PATH.exists():
+    if not labels_exist:
         message = (
             "artifacts/model/class_names.json is missing, so the model's label order "
             "cannot be "
@@ -195,6 +210,15 @@ def load_model():
         logger.error(rejection)
         return None, rejection
 
+    try:
+        # A valid shape is insufficient: damaged weights or incompatible layers
+        # can still produce NaNs or fail only when first called. Readiness must
+        # reflect the ability to run inference, not just deserialize a file.
+        validated_probabilities(loaded_model, np.zeros((*IMAGE_SIZE, 3), dtype=np.uint8))
+    except Exception:
+        logger.exception("The CNN model failed its startup inference check.")
+        return None, "The trained model could not complete its startup inference check."
+
     print(f"CNN model loaded for {', '.join(CLASS_NAMES)}.")
     return loaded_model, None
 
@@ -213,6 +237,8 @@ def db_call(action, detail):
         raise HTTPException(status_code=503, detail="Prediction history is unavailable.")
     try:
         return action()
+    except database.DatabaseBusyError as error:
+        raise HTTPException(status_code=503, detail=str(error), headers={"Retry-After": "2"}) from error
     except Exception as error:
         DATABASE_AVAILABLE = False
         DATABASE_RETRY_AT = time.monotonic() + 5
@@ -298,6 +324,18 @@ async def save_upload(file):
     return path
 
 
+def validated_probabilities(loaded_model, image):
+    probabilities = np.asarray(loaded_model(image[np.newaxis], training=False))
+    if not (np.issubdtype(probabilities.dtype, np.floating) or np.issubdtype(probabilities.dtype, np.integer)):
+        raise ValueError("Model probabilities must be real numbers.")
+    if probabilities.shape != (1, len(CLASS_NAMES)) or not np.all(np.isfinite(probabilities)):
+        raise ValueError("Model returned invalid class probabilities.")
+    probabilities = probabilities[0]
+    if np.any(probabilities < 0) or np.any(probabilities > 1) or not np.isclose(probabilities.sum(), 1, atol=0.01):
+        raise ValueError("Model output is not a probability distribution.")
+    return probabilities
+
+
 def classify_image(image):
     """The official prediction rule: the CNN's own class and its softmax score.
 
@@ -312,12 +350,7 @@ def classify_image(image):
     with model_lock:
         # A direct inference call avoids building a tf.data thread pool for every
         # uploaded image and respects training=False for dropout/batch norm.
-        probabilities = np.asarray(model(image[np.newaxis], training=False))[0]
-
-    if probabilities.shape != (len(CLASS_NAMES),) or not np.all(np.isfinite(probabilities)):
-        raise ValueError("Model returned invalid class probabilities.")
-    if np.any(probabilities < 0) or np.any(probabilities > 1) or not np.isclose(probabilities.sum(), 1, atol=0.01):
-        raise ValueError("Model output is not a probability distribution.")
+        probabilities = validated_probabilities(model, image)
 
     index = int(np.argmax(probabilities))
     return index, float(probabilities[index])
@@ -331,7 +364,7 @@ def home():
 
 
 @app.get("/health")
-def health_check():
+async def health_check():
     return {"status": "ok", "model_available": model is not None, "database_available": DATABASE_AVAILABLE}
 
 
@@ -437,6 +470,7 @@ def clear_history():
 
 
 @app.post("/predict")
+@app.post("/predict/", include_in_schema=False)
 async def predict(file: UploadFile = File(...)):
     # Checked before the upload is written, so an unusable request leaves no file.
     if model is None:

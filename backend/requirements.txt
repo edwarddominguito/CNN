@@ -1,5 +1,6 @@
 # API runtime. Python 3.12 is used by Docker and CI.
-# Constraints preserve the dependency versions validated in the local environment.
+# Docker and CI apply constraints.txt explicitly; keep this file self-contained
+# for installers that copy only requirements.txt into their build environment.
 fastapi==0.136.1
 mysql-connector-python==26.7.0
 numpy==2.4.4

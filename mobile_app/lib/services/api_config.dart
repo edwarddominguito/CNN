@@ -1,13 +1,11 @@
 import 'package:flutter/foundation.dart';
 
-/// Use --dart-define=API_BASE_URL=https://your-backend.up.railway.app
-/// for release builds. Debug builds keep the local emulator defaults.
+/// All builds use Railway unless API_BASE_URL explicitly overrides it.
 class ApiConfig {
-  static const _configuredUrl = String.fromEnvironment('API_BASE_URL');
-  static const _localhost = [
-    'http://127.0.0.1:8000',
-    'http://localhost:8000',
-  ];
+  static const _configuredUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'https://cnn-production-c269.up.railway.app',
+  );
 
   static List<String> get baseUrls => resolveBaseUrls();
 
@@ -19,8 +17,6 @@ class ApiConfig {
   static List<String> resolveBaseUrls({
     String configuredUrl = _configuredUrl,
     bool isRelease = kReleaseMode,
-    bool isWeb = kIsWeb,
-    TargetPlatform? platform,
   }) {
     final value = configuredUrl.trim().replaceFirst(RegExp(r'/+$'), '');
     if (value.isNotEmpty) {
@@ -33,10 +29,6 @@ class ApiConfig {
       }
       return [value];
     }
-    if (isRelease) return [];
-    if (!isWeb && (platform ?? defaultTargetPlatform) == TargetPlatform.android) {
-      return ['http://10.0.2.2:8000', ..._localhost];
-    }
-    return _localhost;
+    return [];
   }
 }

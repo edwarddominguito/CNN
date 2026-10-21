@@ -13,9 +13,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
 from ml.image_preprocessing import CLASS_NAMES, load_inference_image
+from ml.train_model import save_atomically
 
 # The four headline scores, in the order the dashboards show them.
 HEADLINE_METRICS = ("accuracy", "precision", "recall", "f1_score")
@@ -45,8 +46,14 @@ def evaluate_fold(model, image_paths, actual_labels, class_names: list, batch_si
             load_inference_image(path) for path in image_paths[start:start + batch_size]
         ])
         probabilities = np.asarray(model.predict(images, verbose=0))
-        if probabilities.shape != (len(images), len(class_names)) or not np.isfinite(probabilities).all():
+        real_dtype = (np.issubdtype(probabilities.dtype, np.floating)
+                      or np.issubdtype(probabilities.dtype, np.integer))
+        if (probabilities.shape != (len(images), len(class_names)) or not real_dtype
+                or not np.isfinite(probabilities).all()):
             raise ValueError("The model returned invalid evaluation probabilities.")
+        if (np.any(probabilities < 0) or np.any(probabilities > 1)
+                or not np.allclose(probabilities.sum(axis=1), 1, atol=0.01)):
+            raise ValueError("The model output is not a probability distribution.")
         predictions.extend(np.argmax(probabilities, axis=1).tolist())
     predicted_labels = np.asarray(predictions)
 
@@ -61,7 +68,7 @@ def evaluate_fold(model, image_paths, actual_labels, class_names: list, batch_si
     matrix = confusion_matrix(actual_labels, predicted_labels, labels=label_ids)
 
     return {
-        "accuracy": float(report["accuracy"]),
+        "accuracy": float(accuracy_score(actual_labels, predicted_labels)),
         "precision": float(report["macro avg"]["precision"]),
         "recall": float(report["macro avg"]["recall"]),
         "f1_score": float(report["macro avg"]["f1-score"]),
@@ -115,10 +122,8 @@ def summarize_folds(fold_results: list, planned_folds: int) -> str:
 
 
 def write_json(path: Path, payload) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pending = path.with_suffix(".pending.json")
-    pending.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    pending.replace(path)
+    content = json.dumps(payload, indent=2, allow_nan=False)
+    save_atomically(path, lambda pending: pending.write_text(content, encoding="utf-8"))
 
 
 def save_fold_results(fold_results: list, results_dir: Path, planned_folds: int) -> str:
@@ -133,27 +138,29 @@ def save_confusion_matrix(matrix, class_names: list, path: Path, title: str) -> 
     """Save one confusion matrix as a PNG for the written report."""
     matrix = np.asarray(matrix)
     figure, axis = plt.subplots(figsize=(7, 6))
-    figure.colorbar(axis.imshow(matrix, cmap="Blues"), ax=axis)
-    axis.set(
-        title=title,
-        xlabel="Predicted grade",
-        ylabel="Actual grade",
-        xticks=range(len(class_names)),
-        yticks=range(len(class_names)),
-        xticklabels=class_names,
-        yticklabels=class_names,
-    )
-    plt.setp(axis.get_xticklabels(), rotation=30, ha="right")
+    try:
+        figure.colorbar(axis.imshow(matrix, cmap="Blues"), ax=axis)
+        axis.set(
+            title=title,
+            xlabel="Predicted grade",
+            ylabel="Actual grade",
+            xticks=range(len(class_names)),
+            yticks=range(len(class_names)),
+            xticklabels=class_names,
+            yticklabels=class_names,
+        )
+        plt.setp(axis.get_xticklabels(), rotation=30, ha="right")
 
-    highest = matrix.max() if matrix.size else 0
-    for (row, column), count in np.ndenumerate(matrix):
-        shade = "white" if count > highest / 2 else "black"
-        axis.text(column, row, count, ha="center", va="center", color=shade)
+        highest = matrix.max() if matrix.size else 0
+        for (row, column), count in np.ndenumerate(matrix):
+            shade = "white" if count > highest / 2 else "black"
+            axis.text(column, row, count, ha="center", va="center", color=shade)
 
-    figure.tight_layout()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(path, dpi=150)
-    plt.close(figure)
+        figure.tight_layout()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        figure.savefig(path, dpi=150)
+    finally:
+        plt.close(figure)
 
 
 def average_per_class(fold_results: list, class_name: str, key: str) -> float:

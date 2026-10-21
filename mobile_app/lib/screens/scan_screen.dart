@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -108,6 +109,20 @@ class _ScanScreenState extends State<ScanScreen> {
     setState(() => loadingMessage = 'Analyzing rice image...');
 
     final result = await _api.predictRiceGrade(picked.name, bytes);
+    // Saving does not depend on this screen still being open when the request
+    // finishes. Queue it before navigation can open the History screen.
+    if (!result.savedByBackend) {
+      unawaited(_api.saveUnsavedPrediction(
+        PredictionHistoryEntry(
+          predictedGrade: result.predictedGrade,
+          confidence: result.confidence,
+          createdAt: DateTime.now(),
+          imagePath: picked.path,
+          note: result.note,
+          error: result.error,
+        ),
+      ));
+    }
     if (!mounted) {
       return;
     }
@@ -118,20 +133,6 @@ class _ScanScreenState extends State<ScanScreen> {
       errorMessage = result.error;
     });
 
-    // Keep answers the backend could not record, including valid predictions
-    // during a database outage. Already-recorded answers must not be duplicated.
-    if (!result.savedByBackend) {
-      await _api.saveUnsavedPrediction(
-        PredictionHistoryEntry(
-          predictedGrade: result.predictedGrade,
-          confidence: result.confidence,
-          createdAt: DateTime.now(),
-          imagePath: picked.path,
-          note: result.note,
-          error: result.error,
-        ),
-      );
-    }
   }
 
   void resetScan() {

@@ -44,9 +44,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Future<void> clearHistory() async {
-    await _apiService.clearHistory();
+    if (isLoading) return;
+    setState(() => isLoading = true);
+    final cleared = await _apiService.clearHistory();
     if (!mounted) {
       return; // History was closed while the clear was still running.
+    }
+    if (!cleared) {
+      setState(() => isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Could not clear history. Check your connection and try again.'),
+      ));
+      return;
     }
     await loadHistory();
   }
@@ -65,7 +74,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         IconButton(
           tooltip: 'Clear history',
           icon: const Icon(Icons.delete_outline, size: 20),
-          onPressed: entries.isEmpty ? null : clearHistory,
+          onPressed: isLoading || entries.isEmpty ? null : clearHistory,
         ),
       ],
       body: _buildBody(context),
