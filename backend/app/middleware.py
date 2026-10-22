@@ -1,6 +1,10 @@
 """Bound request storage and reject excess predictions before decoding images."""
 
 import asyncio
+import ipaddress
+import math
+import time
+from collections import OrderedDict, deque
 from tempfile import SpooledTemporaryFile
 from threading import BoundedSemaphore
 
@@ -9,6 +13,81 @@ from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 
 STORAGE_ERROR_DETAIL = "Temporary upload storage is unavailable. Please try again later."
+TOO_MANY_REQUESTS_DETAIL = "Too many requests. Please wait a moment and try again."
+
+
+def client_address(scope):
+    """The caller's IP address, as the rate limits count callers.
+
+    Railway's edge sets X-Real-IP to the client's address and replaces any copy the
+    client sent; local runs have no edge, so the socket peer is used. IPv6 callers
+    are counted per /64, the block one device or home network receives, so cycling
+    through addresses inside it does not reset a limit.
+    """
+    peer = (scope.get("client") or ("unknown",))[0]
+    forwarded = dict(scope.get("headers", [])).get(b"x-real-ip", b"").decode("latin-1").strip()
+    for candidate in (forwarded, peer):
+        try:
+            address = ipaddress.ip_address(candidate)
+            if address.version == 6 and address.ipv4_mapped:
+                address = address.ipv4_mapped
+            if address.version == 6:
+                return str(ipaddress.IPv6Network((address, 64), strict=False))
+            return str(address)
+        except ValueError:
+            continue
+    return peer
+
+
+class RateLimiter:
+    """Allow `limit` requests per caller in any `window` seconds (a sliding window).
+
+    One API worker serves the app, so this process sees every request. Only the
+    most recently active callers are remembered, bounding memory however many
+    addresses send requests.
+    """
+
+    def __init__(self, limit, window=60.0, max_callers=4096, clock=time.monotonic):
+        self.limit = limit
+        self.window = window
+        self.max_callers = max_callers
+        self.clock = clock
+        self.callers = OrderedDict()  # caller -> times of its allowed requests
+
+    def retry_after(self, caller):
+        """Count one request: 0 if it may proceed, else whole seconds to wait."""
+        now = self.clock()
+        times = self.callers.pop(caller, None) or deque()
+        while times and times[0] <= now - self.window:
+            times.popleft()
+        self.callers[caller] = times  # re-inserted as the most recently active
+        if len(times) >= self.limit:
+            return max(1, math.ceil(times[0] + self.window - now))
+        times.append(now)
+        while len(self.callers) > self.max_callers:
+            self.callers.popitem(last=False)
+        return 0
+
+
+class RateLimitMiddleware:
+    """Refuse a caller's excess requests to a limited path before reading any body."""
+
+    def __init__(self, app, limiters):
+        self.app = app
+        # Path -> RateLimiter. Looked up per request, so tests can swap entries.
+        self.limiters = limiters
+
+    async def __call__(self, scope, receive, send):
+        limiter = self.limiters.get(scope["path"].rstrip("/")) if scope["type"] == "http" else None
+        if limiter is not None:
+            wait = limiter.retry_after(client_address(scope))
+            if wait:
+                return await JSONResponse(
+                    {"detail": TOO_MANY_REQUESTS_DETAIL},
+                    status_code=429,
+                    headers={"Retry-After": str(wait)},
+                )(scope, receive, send)
+        await self.app(scope, receive, send)
 
 
 class RequestLimitsMiddleware:

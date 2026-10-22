@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' show Random;
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -34,9 +35,47 @@ class RiceApiService {
 
   static const _historyKey = 'prediction_history';
   static const _unsavedHistoryKey = 'unsaved_prediction_history';
+  static const _clientIdKey = 'history_client_id';
   static const _historyLimit = 25;
   // Screens use separate service instances but share the same local store.
   static Completer<void>? _historyOperation;
+  // The backend shows each installation only the history saved with its random
+  // ID. One shared load means screens racing on first launch cannot pick two.
+  static String? _clientId;
+  static Future<String>? _clientIdLoad;
+  static final _validClientId = RegExp(r'^[A-Za-z0-9_-]{32,128}$');
+
+  @visibleForTesting
+  static void forgetClientId() {
+    _clientId = null;
+    _clientIdLoad = null;
+  }
+
+  Future<Map<String, String>> _clientHeaders() async {
+    final id = _clientId ??= await (_clientIdLoad ??= _loadClientId());
+    return {'X-Client-Id': id};
+  }
+
+  static Future<String> _loadClientId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_clientIdKey);
+      if (saved != null && _validClientId.hasMatch(saved)) return saved;
+      final created = _newClientId();
+      await prefs.setString(_clientIdKey, created);
+      return created;
+    } catch (_) {
+      // Without device storage, history is still private for this session.
+      return _newClientId();
+    }
+  }
+
+  static String _newClientId() {
+    final random = Random.secure();
+    return [
+      for (var i = 0; i < 16; i++) random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ].join();
+  }
 
   Future<T> _withHistoryLock<T>(Future<T> Function() operation) async {
     while (_historyOperation != null) {
@@ -62,6 +101,7 @@ class RiceApiService {
     }
     final result = await _tryEachHost<PredictionResult>((baseUrl, client) async {
       final request = http.MultipartRequest('POST', Uri.parse('$baseUrl/predict'));
+      request.headers.addAll(await _clientHeaders());
       request.files.add(
         http.MultipartFile.fromBytes('file', bytes, filename: fileName),
       );
@@ -99,7 +139,7 @@ class RiceApiService {
   Future<List<PredictionHistoryEntry>> getHistory() => _withHistoryLock(() async {
     final remoteEntries = await _tryEachHost<List<PredictionHistoryEntry>>((baseUrl, client) async {
       final response = await client
-          .get(Uri.parse('$baseUrl/history?limit=$_historyLimit'))
+          .get(Uri.parse('$baseUrl/history?limit=$_historyLimit'), headers: await _clientHeaders())
           .timeout(_quickTimeout);
       if (response.statusCode != 200) {
         return null;
@@ -132,7 +172,7 @@ class RiceApiService {
       final response = await client
           .post(
             Uri.parse('$baseUrl/history'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {'Content-Type': 'application/json', ...await _clientHeaders()},
             body: jsonEncode(entry.toJson()),
           )
           .timeout(_quickTimeout);
@@ -149,7 +189,9 @@ class RiceApiService {
   /// Failed server deletion must preserve the local copies for a later retry.
   Future<bool> clearHistory() => _withHistoryLock(() async {
     final cleared = await _tryEachHost<bool>((baseUrl, client) async {
-      final response = await client.delete(Uri.parse('$baseUrl/history')).timeout(_quickTimeout);
+      final response = await client
+          .delete(Uri.parse('$baseUrl/history'), headers: await _clientHeaders())
+          .timeout(_quickTimeout);
       return response.statusCode == 200 ? true : null;
     });
 

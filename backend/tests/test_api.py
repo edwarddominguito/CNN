@@ -1,6 +1,7 @@
 """API failure paths and resource limits, isolated from real prediction history."""
 
 import asyncio
+import hashlib
 import io
 import tempfile
 import threading
@@ -15,6 +16,11 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app import main
+from app.middleware import TOO_MANY_REQUESTS_DETAIL, RateLimiter
+
+CLIENT_ID = "a1" * 16
+CLIENT = {"X-Client-Id": CLIENT_ID}
+CLIENT_HASH = hashlib.sha256(CLIENT_ID.encode()).hexdigest()
 
 
 class FakeModel:
@@ -41,6 +47,8 @@ class ApiTests(unittest.TestCase):
             patch.object(main.database, "init_database"),
             patch.object(main.database, "check_connection"),
             patch.object(main.database, "add_prediction", return_value=42),
+            # The limiters are module-wide; tests that exercise them add their own.
+            patch.dict(main.RATE_LIMITS, clear=True),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -133,7 +141,7 @@ class ApiTests(unittest.TestCase):
 
     def test_busy_database_is_retryable_without_marking_it_offline(self):
         with patch.object(main.database, "list_predictions", side_effect=main.database.DatabaseBusyError("Database is busy")):
-            response = self.client.get("/history")
+            response = self.client.get("/history", headers=CLIENT)
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.headers["Retry-After"], "2")
         self.assertTrue(main.DATABASE_AVAILABLE)
@@ -176,18 +184,121 @@ class ApiTests(unittest.TestCase):
     def test_history_rejects_invalid_fields(self):
         for entry in ({"confidence": -1}, {"confidence": 101}, {"confidence": "NaN"}, {"imagePath": {"nested": True}}, {"createdAt": "invalid"}, {"predictedGrade": "x" * 101}):
             with self.subTest(entry=entry):
-                self.assertEqual(self.client.post("/history", json=entry).status_code, 422)
+                self.assertEqual(self.client.post("/history", json=entry, headers=CLIENT).status_code, 422)
         main.database.add_prediction.assert_not_called()
-        response = self.client.post("/history", content='{"confidence": NaN}', headers={"Content-Type": "application/json"})
+        response = self.client.post("/history", content='{"confidence": NaN}', headers={"Content-Type": "application/json", **CLIENT})
         self.assertEqual(response.status_code, 422)
         self.assertIn("detail", response.json())
 
     def test_history_normalizes_timestamp_and_bounds_request(self):
-        response = self.client.post("/history", json={"predictedGrade": "Premium", "confidence": 90, "createdAt": "2026-10-21T08:00:00+08:00"})
+        response = self.client.post("/history", json={"predictedGrade": "Premium", "confidence": 90, "createdAt": "2026-10-21T08:00:00+08:00"}, headers=CLIENT)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(main.database.add_prediction.call_args.args[0]["created_at"], "2026-10-21T00:00:00+00:00")
-        self.assertEqual(self.client.post("/history", content=b"x" * (65536 + 1)).status_code, 413)
-        self.assertEqual(self.client.get("/history?limit=201").status_code, 422)
+        self.assertEqual(self.client.post("/history", content=b"x" * (65536 + 1), headers=CLIENT).status_code, 413)
+        self.assertEqual(self.client.get("/history?limit=201", headers=CLIENT).status_code, 422)
+
+    def test_history_belongs_to_the_client_that_saved_it(self):
+        with patch.object(main.database, "list_predictions", return_value=[]) as listed, \
+                patch.object(main.database, "clear_predictions") as cleared:
+            # Without a usable client ID nothing is read, written or deleted.
+            for headers in ({}, {"X-Client-Id": "short"}, {"X-Client-Id": "x" * 31 + "!"}):
+                with self.subTest(headers=headers):
+                    self.assertEqual(self.client.get("/history", headers=headers).status_code, 422)
+                    self.assertEqual(self.client.delete("/history", headers=headers).status_code, 422)
+                    self.assertEqual(self.client.post("/history", json={}, headers=headers).status_code, 422)
+            listed.assert_not_called()
+            cleared.assert_not_called()
+            main.database.add_prediction.assert_not_called()
+
+            self.assertEqual(self.client.get("/history?limit=7", headers=CLIENT).json(), [])
+            listed.assert_called_once_with(CLIENT_HASH, 7)
+            self.assertEqual(self.client.delete("/history", headers=CLIENT).json(), {"cleared": True})
+            cleared.assert_called_once_with(CLIENT_HASH)
+            self.assertEqual(self.client.post("/history", json={}, headers=CLIENT).status_code, 200)
+            self.assertEqual(main.database.add_prediction.call_args.args[0]["client_hash"], CLIENT_HASH)
+        # Only the digest is stored or queried, never the replayable ID itself.
+        calls = str(listed.call_args_list + cleared.call_args_list + main.database.add_prediction.call_args_list)
+        self.assertNotIn(CLIENT_ID, calls)
+
+    def test_predictions_are_saved_for_the_sending_client_only(self):
+        response = self.client.post("/predict", files={"file": ("rice.png", png())}, headers=CLIENT)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(main.database.add_prediction.call_args.args[0]["client_hash"], CLIENT_HASH)
+        # The web page and older app builds send no ID: still graded and recorded,
+        # but owned by no client, so no public client can read the entry back.
+        response = self.client.post("/predict", files={"file": ("rice.png", png())})
+        self.assertEqual(response.json(), {"predicted_grade": "Premium", "confidence": 80.0, "history_saved": True})
+        self.assertIsNone(main.database.add_prediction.call_args.args[0]["client_hash"])
+        response = self.client.post("/predict", files={"file": ("rice.png", png())}, headers={"X-Client-Id": "bad id"})
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(main.database.add_prediction.call_count, 2)
+        self.assert_no_uploads()
+
+    def test_rate_limit_answers_before_the_upload_is_read(self):
+        with patch.dict(main.RATE_LIMITS, {"/predict": RateLimiter(2), "/history": RateLimiter(1)}):
+            for _ in range(2):
+                self.assertEqual(self.client.post("/predict", files={"file": ("rice.png", png())}).status_code, 200)
+            refused = self.client.post("/predict/", files={"file": ("rice.png", png())})
+            self.assertEqual(refused.status_code, 429)
+            self.assertEqual(refused.json(), {"detail": TOO_MANY_REQUESTS_DETAIL})
+            self.assertGreaterEqual(int(refused.headers["Retry-After"]), 1)
+            self.assertEqual(main.database.add_prediction.call_count, 2)
+            # Another caller has its own allowance; liveness checks are never limited.
+            other = self.client.post("/predict", files={"file": ("rice.png", png())}, headers={"X-Real-IP": "203.0.113.9"})
+            self.assertEqual(other.status_code, 200)
+            for _ in range(5):
+                self.assertEqual(self.client.get("/health").status_code, 200)
+                self.assertEqual(self.client.get("/ready").status_code, 200)
+            with patch.object(main.database, "list_predictions", return_value=[]):
+                self.assertEqual(self.client.get("/history", headers=CLIENT).status_code, 200)
+                self.assertEqual(self.client.delete("/history", headers=CLIENT).status_code, 429)
+        self.assert_no_uploads()
+
+    def test_cors_allows_only_this_origin_listed_origins_and_loopback(self):
+        preflight = {"Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "x-client-id"}
+        for origin in ("http://localhost:61234", "http://127.0.0.1:8080"):
+            with self.subTest(origin=origin):
+                response = self.client.options("/history", headers={"Origin": origin, **preflight})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers["Access-Control-Allow-Origin"], origin)
+                self.assertIn("x-client-id", response.headers["Access-Control-Allow-Headers"].lower())
+        for origin in ("https://attacker.example", "http://localhost.attacker.example", "https://localhost:8080"):
+            with self.subTest(origin=origin):
+                self.assertEqual(self.client.options("/history", headers={"Origin": origin, **preflight}).status_code, 400)
+                response = self.client.get("/health", headers={"Origin": origin})
+                self.assertEqual(response.status_code, 200)
+                self.assertNotIn("Access-Control-Allow-Origin", response.headers)
+        refused = self.client.options("/history", headers={"Origin": "http://localhost:5000", "Access-Control-Request-Method": "PUT"})
+        self.assertEqual(refused.status_code, 400)
+
+    def test_model_failure_details_stay_in_the_server_log(self):
+        reason = "artifacts/model/class_names.json is missing. Retrain with train_5fold.py."
+        with patch.object(main, "model", None), patch.object(main, "MODEL_LOAD_ERROR", reason):
+            predict = self.client.post("/predict", files={"file": ("rice.png", png())})
+            metrics = self.client.get("/metrics").json()
+        self.assertEqual(predict.status_code, 503)
+        self.assertEqual(predict.json()["detail"], main.MODEL_UNAVAILABLE)
+        self.assertTrue(metrics["model_load_error"])
+        for text in (predict.text, metrics["model_load_error"], metrics["message"]):
+            self.assertNotIn("artifacts", text)
+            self.assertNotIn("train_5fold", text)
+        self.assert_no_uploads()
+
+    def test_non_image_bytes_never_reach_the_image_decoder(self):
+        gif = io.BytesIO()
+        Image.new("RGB", (8, 8)).save(gif, format="GIF")
+        with patch.object(main, "load_inference_image", wraps=main.load_inference_image) as decode:
+            for body in (gif.getvalue(), b"II*\x00" + b"\x00" * 64, b"RIFF\x00\x00\x00\x00AVI LIST"):
+                with self.subTest(body=body[:8]):
+                    response = self.client.post("/predict", files={"file": ("rice.png", body)})
+                    self.assertEqual(response.status_code, 400)
+            decode.assert_not_called()
+            webp = io.BytesIO()
+            Image.new("RGB", (32, 32), "white").save(webp, format="WEBP")
+            for body in (png(), webp.getvalue()):
+                self.assertEqual(self.client.post("/predict", files={"file": ("rice.jpg", body)}).status_code, 200)
+            self.assertEqual(decode.call_count, 2)
+        self.assert_no_uploads()
 
     def test_invalid_metrics_json_does_not_crash(self):
         path = Path(self.directory.name) / "metrics.json"

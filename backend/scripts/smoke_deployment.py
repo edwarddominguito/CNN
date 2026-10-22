@@ -2,12 +2,14 @@
 
 The default checks are read-only. --exercise-prediction submits one synthetic PNG
 and records one test prediction in that deployment's history; use it in CI/staging.
+That entry belongs to this run's random client ID, so no app user ever sees it.
 This verifies serving and response contracts, not model accuracy.
 """
 
 import argparse
 import json
 import math
+import secrets
 import struct
 import time
 import urllib.error
@@ -26,11 +28,24 @@ def request(base_url, path, *, data=None, headers=None, timeout=10):
         return error.code, error.headers, error.read()
 
 
-def get_json(base_url, path):
-    status, _, body = request(base_url, path)
+def get_json(base_url, path, headers=None):
+    status, _, body = request(base_url, path, headers=headers)
     if status != 200:
         raise RuntimeError(f"{path} returned HTTP {status}.")
     return json.loads(body)
+
+
+def new_client():
+    """Headers for a fresh client: its history starts empty and stays private."""
+    return {"X-Client-Id": secrets.token_hex(16)}
+
+
+def check_history(base_url, client):
+    history = get_json(base_url, "/history?limit=1", client)
+    if not isinstance(history, list) or len(history) > 1:
+        raise RuntimeError("/history returned an invalid page.")
+    if request(base_url, "/history?limit=1")[0] == 200:
+        raise RuntimeError("/history answered a request that carried no client ID.")
 
 
 class WebAssets(HTMLParser):
@@ -116,8 +131,8 @@ def synthetic_png():
     )
 
 
-def exercise_prediction(base_url, classes):
-    previous_ids = {row.get("id") for row in get_json(base_url, "/history?limit=200")}
+def exercise_prediction(base_url, classes, client):
+    previous_ids = {row.get("id") for row in get_json(base_url, "/history?limit=200", client)}
     boundary = "rice-deployment-smoke"
     body = (
         f"--{boundary}\r\n"
@@ -128,7 +143,7 @@ def exercise_prediction(base_url, classes):
         base_url,
         "/predict",
         data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}", **client},
         timeout=60,
     )
     if status != 200:
@@ -143,7 +158,7 @@ def exercise_prediction(base_url, classes):
         raise RuntimeError("/predict confidence is outside 0..100.")
     if result.get("history_saved") is not True:
         raise RuntimeError("/predict did not confirm that its history entry was saved.")
-    history = get_json(base_url, "/history?limit=200")
+    history = get_json(base_url, "/history?limit=200", client)
     if not any(
         row.get("id") not in previous_ids
         and row.get("predictedGrade") == result["predicted_grade"]
@@ -151,6 +166,8 @@ def exercise_prediction(base_url, classes):
         for row in history
     ):
         raise RuntimeError("The prediction was not readable from persisted history.")
+    if get_json(base_url, "/history?limit=200", new_client()):
+        raise RuntimeError("Another client could read this client's prediction history.")
 
 
 def main():
@@ -174,12 +191,11 @@ def main():
     classes = metrics.get("classes")
     if not isinstance(classes, list) or not classes:
         raise RuntimeError("/metrics did not return the model classes.")
-    history = get_json(base_url, "/history?limit=1")
-    if not isinstance(history, list) or len(history) > 1:
-        raise RuntimeError("/history returned an invalid page.")
+    client = new_client()
+    check_history(base_url, client)
     check_web_client(base_url)
     if args.exercise_prediction:
-        exercise_prediction(base_url, classes)
+        exercise_prediction(base_url, classes, client)
     print("Deployment smoke checks passed" + (" (one synthetic prediction saved)." if args.exercise_prediction else "."))
 
 

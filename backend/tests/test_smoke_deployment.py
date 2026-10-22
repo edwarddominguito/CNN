@@ -46,15 +46,39 @@ class DeploymentSmokeTests(unittest.TestCase):
     def test_prediction_must_be_newly_persisted(self):
         for history_saved, newest_id, success in ((True, 2, True), (False, 2, False), (True, 1, False)):
             result = {"predicted_grade": "Premium", "confidence": 51.25, "history_saved": history_saved}
-            histories = [[{"id": 1}], [{"id": newest_id, "predictedGrade": "Premium", "confidence": 51.25}]]
+            histories = [[{"id": 1}], [{"id": newest_id, "predictedGrade": "Premium", "confidence": 51.25}], []]
             with self.subTest(saved=history_saved, newest_id=newest_id), patch.object(
                 smoke, "get_json", side_effect=histories
             ), patch.object(smoke, "request", return_value=(200, {}, json.dumps(result).encode())):
                 if success:
-                    smoke.exercise_prediction("http://example.test", ["Premium"])
+                    smoke.exercise_prediction("http://example.test", ["Premium"], smoke.new_client())
                 else:
                     with self.assertRaises(RuntimeError):
-                        smoke.exercise_prediction("http://example.test", ["Premium"])
+                        smoke.exercise_prediction("http://example.test", ["Premium"], smoke.new_client())
+
+    def test_prediction_uses_one_client_and_must_stay_private(self):
+        client = smoke.new_client()
+        result = {"predicted_grade": "Premium", "confidence": 51.25, "history_saved": True}
+        saved = {"id": 2, "predictedGrade": "Premium", "confidence": 51.25}
+        with patch.object(smoke, "get_json", side_effect=[[], [saved], [saved]]) as get_json, \
+                patch.object(smoke, "request", return_value=(200, {}, json.dumps(result).encode())) as request:
+            with self.assertRaisesRegex(RuntimeError, "Another client"):
+                smoke.exercise_prediction("http://example.test", ["Premium"], client)
+        self.assertEqual(request.call_args.kwargs["headers"]["X-Client-Id"], client["X-Client-Id"])
+        owners = [call.args[2]["X-Client-Id"] for call in get_json.call_args_list]
+        self.assertEqual(owners[:2], [client["X-Client-Id"]] * 2)
+        self.assertNotEqual(owners[2], client["X-Client-Id"])
+
+    def test_history_without_a_client_id_must_be_refused(self):
+        for anonymous_status, success in ((422, True), (200, False)):
+            with self.subTest(status=anonymous_status), \
+                    patch.object(smoke, "get_json", return_value=[]), \
+                    patch.object(smoke, "request", return_value=(anonymous_status, {}, b"[]")):
+                if success:
+                    smoke.check_history("http://example.test", smoke.new_client())
+                else:
+                    with self.assertRaises(RuntimeError):
+                        smoke.check_history("http://example.test", smoke.new_client())
 
 
 if __name__ == "__main__":

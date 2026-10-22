@@ -147,18 +147,26 @@ not require cross-origin browser requests.
 - `GET /ready` requires a compatible loaded model and usable MySQL history store;
   it returns 503 until both are available. Use it as the Railway healthcheck.
 - `GET /metrics` reports model availability and saved evaluation scores. Missing
-  evaluation data is reported as unavailable; scores are never invented.
+  evaluation data is reported as unavailable; scores are never invented. Why a
+  model failed to load is written to the server log, not to responses.
 - `POST /predict` returns `predicted_grade`, confidence in 0..100, and
   `history_saved`. A false `history_saved` means inference succeeded but history
-  persistence failed.
-- `GET /history?limit=50`, `POST /history`, and `DELETE /history` operate on MySQL.
-  History reads are capped at 200 entries per response.
+  persistence failed. An optional `X-Client-Id` header saves the result to that
+  client's history; without it the result belongs to no client.
+- `GET /history?limit=50`, `POST /history`, and `DELETE /history` operate on MySQL
+  and require `X-Client-Id` (32-128 letters, digits, `-` or `_`). Each touches
+  only the rows saved with that ID, stored as its SHA-256. History reads are
+  capped at 200 entries per response.
 - `GET /` serves the built React application when `backend/static` exists;
   otherwise it returns the API welcome response.
 
 An unavailable model or busy inference slot returns 503. Oversized requests return
-413. Empty/corrupt images return 400, invalid history data returns 422, and an
-unexpected inference failure returns 500. Temporary files are removed on all
+413. Empty/corrupt images return 400, invalid history data or a missing client ID
+returns 422, and an unexpected inference failure returns 500. Uploads that do not
+start with a JPEG, PNG or WebP signature are refused before any decoder runs.
+More than 30 predictions or 60 history requests per minute from one IP return
+429; `PREDICT_RATE_LIMIT_PER_MINUTE` and `HISTORY_RATE_LIMIT_PER_MINUTE` change
+those limits, and 0 turns one off. Temporary files are removed on all
 completed prediction paths. The API rejects invalid/nonfinite model outputs and
 large decoded images instead of returning a fabricated grade.
 
@@ -167,6 +175,8 @@ spooling runs outside the event loop, so slow disk writes do not block liveness
 checks. The Flutter client preserves local history when a remote clear fails,
 and serializes history updates so simultaneous saves cannot overwrite records.
 
-The history API has no user login or per-user separation. Add an appropriate
-access layer before exposing sensitive/shared history to untrusted users. This
+History is separated per app installation by an anonymous client ID, not by user
+accounts: reinstalling the app starts an empty history, and anyone holding an ID
+can read or clear its history. Add user accounts before storing sensitive data.
+To run as a least-privilege MySQL user, see [RAILWAY.md](RAILWAY.md). This
 system remains a demonstration classifier with the accuracy limits above.

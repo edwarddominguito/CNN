@@ -61,6 +61,42 @@ Do not rename a different model or edit labels to bypass a compatibility failure
    The entry point listens on Railway's injected `PORT` at `0.0.0.0`; no fixed
    port variable or separate React service is needed.
 
+### Use a dedicated database user
+
+`${{MySQL.MYSQL_URL}}` connects as `root`, and the API logs a warning when it
+does. Once its table is current, the API needs only `SELECT`, `INSERT` and
+`DELETE` on that one table, so give it its own user:
+
+1. Deploy this version once with the existing root `MYSQL_URL`. On startup it
+   adds a nullable `client_hash` column and an `idx_prediction_client` index to
+   `prediction_history`, keeping every existing row. Wait for `/ready` to return 200.
+2. In the MySQL service's database console, or any MySQL client connected with
+   that service's URL, run this with a long random password:
+
+   ```sql
+   CREATE USER 'rice_app'@'%' IDENTIFIED BY 'REPLACE_WITH_A_LONG_RANDOM_PASSWORD';
+   GRANT SELECT, INSERT, DELETE ON `railway`.`prediction_history` TO 'rice_app'@'%';
+   ```
+
+   Replace `railway` if the service's `MYSQLDATABASE` names another database.
+3. Point the application at that user. Either delete `MYSQL_URL` and set
+   `MYSQLHOST=${{MySQL.MYSQLHOST}}`, `MYSQLPORT=${{MySQL.MYSQLPORT}}`,
+   `MYSQLDATABASE=${{MySQL.MYSQLDATABASE}}`, `MYSQLUSER=rice_app` and
+   `MYSQLPASSWORD`, or keep a URL and percent-encode the password inside it
+   (`/` is `%2F`, `#` is `%23`, `?` is `%3F`, `@` is `%40`):
+
+   ```text
+   MYSQL_URL=mysql://rice_app:ENCODED_PASSWORD@${{MySQL.MYSQLHOST}}:${{MySQL.MYSQLPORT}}/${{MySQL.MYSQLDATABASE}}
+   ```
+
+4. Redeploy. Confirm `/ready` returns 200 and the root warning no longer appears
+   in the deployment log.
+
+This user cannot create or alter tables. If a later version changes the schema,
+deploy it once with root first. Started against an outdated table, the API logs
+the denied statement and `/ready` stays 503, so Railway keeps the previous
+deployment serving.
+
 As checked on 2026-10-21, Railway's legacy `railway.toml` and `railway.json`
 configuration is deprecated and unavailable for new services. This repository
 uses Docker discovery and the dashboard settings above. Railway's replacement
@@ -77,6 +113,18 @@ The built React app calls the API on the same HTTPS domain. Leave `VITE_API_URL`
 unset for this layout. If the web client is hosted separately, set `VITE_API_URL`
 to the API's HTTPS URL **before building** the web client and set the backend's
 `CORS_ORIGINS` to the exact allowed browser origins, separated by commas.
+Without `CORS_ORIGINS`, browsers may call the API only from its own domain and
+from `http://localhost` or `http://127.0.0.1` on any port, which local Flutter
+web runs such as `mobile_app/run_chrome.bat` use. Mobile apps do not use CORS.
+`CORS_ORIGINS=*` restores the earlier allow-every-origin behavior.
+
+History is private to each app installation. On first launch the Flutter app
+stores a random ID and sends it in an `X-Client-Id` header; `/history` reads,
+saves and clears only the rows saved with that ID, which MySQL stores as its
+SHA-256. Requests without an ID get 422. Predictions sent without one, from the
+web page or from app builds older than this change, are still recorded but
+belong to no client, as do rows saved before the change. Rebuild and reinstall
+the APK so phones send the ID.
 
 Build the Flutter release with the public application URL:
 
@@ -124,8 +172,11 @@ python backend/scripts/smoke_deployment.py --url https://YOUR-APP.up.railway.app
 ```
 
 For staging, append `--exercise-prediction` to submit one synthetic image and save
-one test history entry. Test real rice photographs separately, verify that a
-prediction appears in history, redeploy, and confirm the history survives.
+one test history entry under a random client ID that no app user shares. The
+script also checks that `/history` refuses requests without a client ID and that
+another client cannot read the new entry. Test real rice photographs from the
+app, verify that a prediction appears in its History screen, redeploy, and
+confirm the history survives. Opening `/history` in a browser now returns 422.
 
 If Docker is installed, you can build the same image locally:
 
@@ -153,13 +204,23 @@ excludes the separate MySQL service. A 512 MiB memory limit is below that observ
 peak; measure the Linux container under representative load before choosing its
 production memory budget, because Windows and Linux usage can differ.
 
+Each caller IP may send 30 `/predict` and 60 `/history` requests per minute.
+Excess requests get 429 with `Retry-After` before their body is read. Railway's
+edge supplies the caller's IP in `X-Real-IP`; locally the socket address is
+used. Testers sharing one network share one allowance, so raise
+`PREDICT_RATE_LIMIT_PER_MINUTE` or `HISTORY_RATE_LIMIT_PER_MINUTE` for a group
+session, or set either to 0 to turn that limit off. `/health` and `/ready` are
+never limited.
+
 Railway's deployment healthcheck does not continuously monitor a running service.
 Monitor its logs and memory, and use an external uptime check on `/ready` if
-continuous readiness monitoring is required. Protect history data using an
-appropriate access layer before offering the application to untrusted users;
-the API currently exposes history operations to its clients without user login.
+continuous readiness monitoring is required. History is separated per app
+installation, not per person: there is no login, and whoever holds an
+installation's client ID can read or clear that installation's history. Add
+user accounts before storing sensitive information.
 
-When `/ready` fails, inspect `/health`, `/metrics`, and deployment logs. A missing
+When `/ready` fails, inspect `/health`, `/metrics`, and deployment logs. Clients
+are told only that the model is unavailable; the log records why. A missing
 or incompatible model requires replacing the matching artifacts and redeploying.
 A database failure requires fixing its connection variables or availability.
 Increasing the healthcheck timeout does not repair either configuration problem.

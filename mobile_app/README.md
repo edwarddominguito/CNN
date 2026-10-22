@@ -26,7 +26,9 @@ Android HTTP access is enabled only for debug builds.
 Run `flutter analyze` and `flutter test` before building. Uploads have a
 two-minute deadline, and HTTP clients close when requests finish or time out.
 Only valid server predictions are displayed; network failures remain errors.
-The app keeps an offline copy of downloaded history. History operations are
+On first launch the app stores a random ID and sends it as `X-Client-Id`, so the
+server returns only this installation's history; reinstalling starts a new,
+empty server history. The app keeps an offline copy of downloaded history. History operations are
 serialized across screens so concurrent saves and refreshes cannot overwrite
 each other. A failed server deletion keeps both local history copies and shows
 a retry message. Animated images are rejected before preview.

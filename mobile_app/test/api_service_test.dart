@@ -32,7 +32,46 @@ void main() {
     uploadTimeout: timeout ?? const Duration(seconds: 2),
   );
 
-  setUp(() => SharedPreferences.setMockInitialValues({}));
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    RiceApiService.forgetClientId();
+  });
+
+  test('every request carries one stable client ID that keeps history private', () async {
+    final sent = <String?>[];
+    final client = TrackingClient((request) async {
+      sent.add(request.headers['X-Client-Id']);
+      if (request.url.path == '/predict') {
+        return http.Response(jsonEncode({'predicted_grade': 'Premium', 'confidence': 98.7}), 200);
+      }
+      return http.Response(request.method == 'GET' ? '[]' : '{}', 200);
+    });
+    final api = service(client);
+    await api.predictRiceGrade('rice.jpg', image);
+    await api.getHistory();
+    await api.saveUnsavedPrediction(PredictionHistoryEntry(
+      predictedGrade: 'Premium', confidence: 98.7, createdAt: DateTime.utc(2026, 1, 2),
+    ));
+    expect(await api.clearHistory(), isTrue);
+
+    expect(sent, hasLength(4));
+    expect(sent.toSet(), hasLength(1));
+    expect(sent.first, matches(RegExp(r'^[0-9a-f]{32}$')));
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('history_client_id'), sent.first);
+  });
+
+  test('a saved client ID is reused after the app restarts', () async {
+    final saved = 'f0' * 16;
+    SharedPreferences.setMockInitialValues({'history_client_id': saved});
+    String? sent;
+    final client = TrackingClient((request) async {
+      sent = request.headers['X-Client-Id'];
+      return http.Response('[]', 200);
+    });
+    await service(client).getHistory();
+    expect(sent, saved);
+  });
 
   test('animated PNG files are rejected before creating a live preview', () async {
     final bytes = base64Decode('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACGFjVEwAAAACAAAAAPONk3AAAAAaZmNUTAAAAAAAAAACAAAAAgAAAAAAAAAAAAEACgAA6FTcAAAAABBJREFUeJxj/M8AAkxgkgEADR0BA4LJcf8AAAAaZmNUTAAAAAEAAAACAAAAAgAAAAAAAAAAAAEACgAAcyc21AAAABZmZEFUAAAAAnicY2Rg+M/AwMDEAAYACx8BAyVgX34AAAAASUVORK5CYII=');

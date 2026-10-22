@@ -8,6 +8,10 @@ import mysql.connector
 
 DATABASE_TIMEOUT_SECONDS = 5
 MAX_HISTORY_LIMIT = 200
+INVALID_URL = (
+    "MYSQL_URL must be a valid mysql:// connection URL. Percent-encode special "
+    "characters in its user name and password."
+)
 connection_slots = BoundedSemaphore(4)
 logger = logging.getLogger("rice_backend.database")
 
@@ -23,10 +27,15 @@ def mysql_config():
     """
     url = os.getenv("MYSQL_URL")
     if url:
-        parsed = urlsplit(url)
+        try:
+            parsed = urlsplit(url)
+            port = 3306 if parsed.port is None else parsed.port
+        except ValueError:
+            # urllib quotes the text it could not parse, which can be part of a
+            # password holding an unencoded "/", "?" or "#". Never chain it.
+            raise ValueError(INVALID_URL) from None
         if parsed.scheme not in {"mysql", "mysql+mysqlconnector"} or not parsed.hostname:
-            raise ValueError("MYSQL_URL must be a valid mysql:// connection URL.")
-        port = 3306 if parsed.port is None else parsed.port
+            raise ValueError(INVALID_URL)
         if not 1 <= port <= 65535:
             raise ValueError("MySQL port must be between 1 and 65535.")
         config = {
@@ -104,25 +113,44 @@ def get_connection():
 
 
 def init_database():
+    """Create or upgrade the history table, running DDL only for what is missing.
+
+    MySQL refuses even CREATE TABLE IF NOT EXISTS to a user without the CREATE
+    privilege. Checking first lets the app run as a user limited to SELECT, INSERT
+    and DELETE on this table once the schema is current (docs/RAILWAY.md).
+    """
     with get_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                "CREATE TABLE IF NOT EXISTS prediction_history ("
-                "id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT, "
-                "predicted_grade VARCHAR(100) NOT NULL, "
-                "confidence DOUBLE NOT NULL DEFAULT 0, image_path TEXT, note TEXT, "
-                "error TEXT, created_at VARCHAR(64) NOT NULL, "
-                "INDEX idx_prediction_created_at (created_at, id))"
-            )
-            # Existing installations also need the index: LIMIT alone otherwise
-            # still sorts the entire history table for every request.
-            cursor.execute(
-                "SHOW INDEX FROM prediction_history WHERE Key_name = 'idx_prediction_created_at'"
-            )
+            cursor.execute("SHOW TABLES LIKE 'prediction_history'")
             if not cursor.fetchall():
                 cursor.execute(
-                    "CREATE INDEX idx_prediction_created_at ON prediction_history (created_at, id)"
+                    "CREATE TABLE IF NOT EXISTS prediction_history ("
+                    "id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT, "
+                    "predicted_grade VARCHAR(100) NOT NULL, "
+                    "confidence DOUBLE NOT NULL DEFAULT 0, image_path TEXT, note TEXT, "
+                    "error TEXT, created_at VARCHAR(64) NOT NULL, client_hash CHAR(64), "
+                    "INDEX idx_prediction_created_at (created_at, id), "
+                    "INDEX idx_prediction_client (client_hash, created_at, id))"
                 )
+            # Tables from earlier versions predate per-client history. The column
+            # is nullable, so their rows are kept, readable by no client.
+            cursor.execute("SHOW COLUMNS FROM prediction_history LIKE 'client_hash'")
+            if not cursor.fetchall():
+                cursor.execute("ALTER TABLE prediction_history ADD COLUMN client_hash CHAR(64) NULL")
+            # Existing installations also need the indexes: LIMIT alone otherwise
+            # still sorts the entire history table for every request.
+            for name, columns in (
+                ("idx_prediction_created_at", "created_at, id"),
+                ("idx_prediction_client", "client_hash, created_at, id"),
+            ):
+                cursor.execute(f"SHOW INDEX FROM prediction_history WHERE Key_name = '{name}'")
+                if not cursor.fetchall():
+                    cursor.execute(f"CREATE INDEX {name} ON prediction_history ({columns})")
+        if connection.user == "root":
+            logger.warning(
+                "Connected to MySQL as root. Use a dedicated least-privilege user "
+                "for deployments; see docs/RAILWAY.md."
+            )
 
 
 def check_connection():
@@ -137,7 +165,7 @@ def add_prediction(entry):
         with connection.cursor() as cursor:
             cursor.execute(
                 "INSERT INTO prediction_history (predicted_grade, confidence, image_path, "
-                "note, error, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+                "note, error, created_at, client_hash) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (
                     entry["predicted_grade"],
                     entry.get("confidence", 0),
@@ -145,28 +173,31 @@ def add_prediction(entry):
                     entry.get("note"),
                     entry.get("error"),
                     entry["created_at"],
+                    entry.get("client_hash"),
                 ),
             )
             return cursor.lastrowid
 
 
-def list_predictions(limit=50):
+# Both queries match one client's rows only. SQL never treats NULL as equal, so
+# rows saved without a client (and a missing hash) match nothing.
+def list_predictions(client_hash, limit=50):
     limit = max(1, min(int(limit), MAX_HISTORY_LIMIT))
 
     with get_connection() as connection:
         with connection.cursor(dictionary=True) as cursor:
             # The API normalizes incoming timestamps to UTC ISO strings.
             cursor.execute(
-                f"SELECT {', '.join(FIELDS)} FROM prediction_history "
+                f"SELECT {', '.join(FIELDS)} FROM prediction_history WHERE client_hash = %s "
                 "ORDER BY created_at DESC, id DESC LIMIT %s",
-                (limit,),
+                (client_hash, limit),
             )
             rows = cursor.fetchall()
 
     return [{key: row[column] for column, key in FIELDS.items()} for row in rows]
 
 
-def clear_predictions():
+def clear_predictions(client_hash):
     with get_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute("DELETE FROM prediction_history")
+            cursor.execute("DELETE FROM prediction_history WHERE client_hash = %s", (client_hash,))

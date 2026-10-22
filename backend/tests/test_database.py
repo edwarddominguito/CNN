@@ -1,9 +1,20 @@
 import os
+import traceback
 from contextlib import ExitStack
 import unittest
 from unittest.mock import MagicMock, patch
 
 from app import database
+
+
+def init_with(*results):
+    """Run init_database against a fake MySQL; return the SQL it executed."""
+    connection = MagicMock()
+    cursor = connection.cursor.return_value.__enter__.return_value
+    cursor.fetchall.side_effect = list(results)
+    with patch.object(database.mysql.connector, "connect", return_value=connection):
+        database.init_database()
+    return [call.args[0] for call in cursor.execute.call_args_list]
 
 
 class DatabaseTests(unittest.TestCase):
@@ -38,22 +49,53 @@ class DatabaseTests(unittest.TestCase):
         connection.close.assert_called_once()
 
     def test_history_index_is_added_to_existing_tables(self):
+        # A table from an earlier version: no client column and no indexes.
+        sql = init_with([("prediction_history",)], [], [], [])
+        self.assertFalse(any(query.startswith("CREATE TABLE") for query in sql))
+        self.assertIn("ALTER TABLE prediction_history ADD COLUMN client_hash CHAR(64) NULL", sql)
+        self.assertTrue(any(query.startswith("CREATE INDEX idx_prediction_created_at") for query in sql))
+        self.assertTrue(any(query.startswith("CREATE INDEX idx_prediction_client") for query in sql))
+
+    def test_history_index_is_not_recreated_if_present(self):
+        # A current schema must start for a user holding only SELECT, INSERT and
+        # DELETE: MySQL denies such a user even CREATE TABLE IF NOT EXISTS.
+        sql = init_with(*[[("already present",)]] * 4)
+        self.assertTrue(sql)
+        self.assertTrue(all(query.startswith("SHOW ") for query in sql), sql)
+
+    def test_new_database_gets_the_complete_schema(self):
+        sql = init_with([], [("client_hash",)], [("index",)], [("index",)])
+        create = next(query for query in sql if query.startswith("CREATE TABLE"))
+        for part in ("client_hash CHAR(64)", "idx_prediction_created_at", "idx_prediction_client"):
+            self.assertIn(part, create)
+        self.assertEqual([query for query in sql if not query.startswith("SHOW ")], [create])
+
+    def test_history_reads_and_deletes_match_one_client(self):
         connection = MagicMock()
         cursor = connection.cursor.return_value.__enter__.return_value
         cursor.fetchall.return_value = []
         with patch.object(database.mysql.connector, "connect", return_value=connection):
-            database.init_database()
-        sql = [call.args[0] for call in cursor.execute.call_args_list]
-        self.assertTrue(any(query.startswith("CREATE INDEX idx_prediction_created_at") for query in sql))
+            database.list_predictions("client-digest", 500)
+            database.clear_predictions("client-digest")
+            database.add_prediction({"predicted_grade": "Premium", "created_at": "now", "client_hash": "client-digest"})
+        (select, select_args), (delete, delete_args), (insert, insert_args) = (
+            call.args for call in cursor.execute.call_args_list
+        )
+        self.assertIn("WHERE client_hash = %s", select)
+        self.assertEqual(select_args, ("client-digest", database.MAX_HISTORY_LIMIT))
+        self.assertEqual((delete, delete_args), ("DELETE FROM prediction_history WHERE client_hash = %s", ("client-digest",)))
+        self.assertIn("client_hash", insert)
+        self.assertEqual(insert_args[-1], "client-digest")
 
-    def test_history_index_is_not_recreated_if_present(self):
-        connection = MagicMock()
-        cursor = connection.cursor.return_value.__enter__.return_value
-        cursor.fetchall.return_value = [("index already exists",)]
-        with patch.object(database.mysql.connector, "connect", return_value=connection):
-            database.init_database()
-        sql = [call.args[0] for call in cursor.execute.call_args_list]
-        self.assertFalse(any(query.startswith("CREATE INDEX") for query in sql))
+    def test_malformed_url_never_echoes_the_password(self):
+        # An unencoded "/" or "#" makes urllib read part of the password as the port.
+        for url in ("mysql://rice_app:Secret/Part@db:3306/railway", "mysql://rice_app:Secret#Part@db/railway"):
+            with self.subTest(url=url), patch.dict(os.environ, {"MYSQL_URL": url}, clear=True):
+                with self.assertRaises(ValueError) as raised:
+                    database.mysql_config()
+                logged = "".join(traceback.format_exception(raised.exception))
+                self.assertNotIn("Secret", logged)
+                self.assertIn("Percent-encode", logged)
 
     def test_connection_rolls_back_failure_and_closes(self):
         connection = MagicMock()

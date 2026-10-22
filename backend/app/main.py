@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -21,7 +22,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import numpy as np
 import tensorflow as tf
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -29,7 +30,7 @@ from ml.image_preprocessing import CLASS_NAMES, IMAGE_SIZE, load_inference_image
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
-from app.middleware import RequestLimitsMiddleware
+from app.middleware import RateLimiter, RateLimitMiddleware, RequestLimitsMiddleware
 from app.paths import BACKEND_DIR, MODEL_DIR, UPLOADS_DIR
 
 MODEL_PATH = MODEL_DIR / "rice_cnn_model.keras"
@@ -40,6 +41,12 @@ STATIC_DIR = BACKEND_DIR / "static"
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 1024 * 1024
 IMAGE_SUFFIXES = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
+# Each app installation sends a random X-Client-Id. History is stored and matched
+# by its SHA-256, so the table holds no ID that could be replayed to the API.
+CLIENT_ID_PATTERN = r"^[A-Za-z0-9_-]{32,128}$"
+# Load failures name artifact files and repair steps. The server log keeps those;
+# clients only learn that grading is unavailable.
+MODEL_UNAVAILABLE = "The classifier is not available right now. Please try again later."
 # Fields train_5fold.py writes into metrics.json and /metrics forwards unchanged.
 METRIC_FIELDS = (
     "accuracy", "precision", "recall", "f1_score",
@@ -64,14 +71,39 @@ async def lifespan(application):
     yield
 
 
+def per_minute(name, default):
+    """A requests-per-minute limit from the environment. 0 turns the limit off."""
+    value = os.getenv(name, "").strip() or str(default)
+    if not (value.isascii() and value.isdigit()):
+        raise RuntimeError(f"{name} must be a whole number of requests per minute (0 turns it off).")
+    return int(value)
+
+
+# Counted per caller IP (app.middleware.client_address) before a body is read.
+# Generous enough for several people testing from one shared network.
+RATE_LIMITS = {
+    path: RateLimiter(limit)
+    for path, limit in (
+        ("/predict", per_minute("PREDICT_RATE_LIMIT_PER_MINUTE", 30)),
+        ("/history", per_minute("HISTORY_RATE_LIMIT_PER_MINUTE", 60)),
+    )
+    if limit
+}
+
 app = FastAPI(title="Rice CNN Backend", lifespan=lifespan)
 app.add_middleware(RequestLimitsMiddleware, max_upload_bytes=MAX_UPLOAD_BYTES)
+app.add_middleware(RateLimitMiddleware, limiters=RATE_LIMITS)
+# The React client is served from this origin and the mobile apps are not
+# browsers, so neither needs CORS. Loopback origins keep Flutter web runs
+# (mobile_app/run_chrome.bat, on a random localhost port) working. A web client
+# hosted anywhere else must be listed in CORS_ORIGINS.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "*").split(",") if origin.strip()],
+    allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()],
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d{1,5})?",
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "X-Client-Id"],
 )
 
 
@@ -193,7 +225,9 @@ def load_model():
     try:
         with MODEL_PATH.open("rb") as weights:
             if weights.read(43).startswith(b"version https://git-lfs.github.com/spec/v1"):
-                return None, "The model is a Git LFS pointer. Include the actual model weights."
+                message = "The model is a Git LFS pointer. Include the actual model weights."
+                logger.error(message)
+                return None, message
         loaded_model = tf.keras.models.load_model(MODEL_PATH, compile=False)
     except Exception:
         logger.exception("Could not load the CNN model.")
@@ -246,7 +280,7 @@ def db_call(action, detail):
         raise HTTPException(status_code=503, detail=detail) from error
 
 
-def save_history(result, image_path=None):
+def save_history(result, image_path=None, client_hash=None):
     try:
         return db_call(lambda: database.add_prediction(
             {
@@ -256,6 +290,7 @@ def save_history(result, image_path=None):
                 "note": result.get("note"),
                 "error": result.get("error"),
                 "created_at": datetime.now(timezone.utc).isoformat(),
+                "client_hash": client_hash,
             }
         ), "Could not save prediction history.")
     except HTTPException:
@@ -322,6 +357,26 @@ async def save_upload(file):
         remove_upload(path)
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
     return path
+
+
+def has_image_signature(header):
+    """True when these leading bytes start a JPEG, PNG or WebP file."""
+    return header.startswith((b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n")) or (
+        header.startswith(b"RIFF") and header[8:12] == b"WEBP"
+    )
+
+
+def load_upload(path):
+    """Decode an upload with the official preprocessing, if it is a supported type.
+
+    Pillow recognises JPEG, PNG and WebP by these same leading bytes, so no valid
+    image is turned away here. Any other upload never reaches Pillow, which would
+    otherwise offer it to parsers for formats the API does not accept.
+    """
+    with path.open("rb") as upload:
+        if not has_image_signature(upload.read(12)):
+            raise ValueError("The upload is not a JPEG, PNG or WebP file.")
+    return load_inference_image(path)
 
 
 def validated_probabilities(loaded_model, image):
@@ -395,7 +450,7 @@ def metrics():
     trained = CLASS_NAMES if model is not None else []
 
     if MODEL_LOAD_ERROR:
-        message = f"The model is not being served: {MODEL_LOAD_ERROR}"
+        message = "The model is not being served. The server log records why."
     elif model is None:
         message = "No trained model yet. Run train_5fold.py to create one."
     elif saved.get("evaluation_method"):
@@ -419,7 +474,7 @@ def metrics():
             for name in CLASS_NAMES
         ],
         "database_available": DATABASE_AVAILABLE,
-        "model_load_error": MODEL_LOAD_ERROR,
+        "model_load_error": "The trained model could not be loaded." if MODEL_LOAD_ERROR else None,
         # False until train_5fold.py records a run. Every METRIC_FIELDS value is
         # then null, so an absent metrics.json reports "not evaluated" rather than
         # scores from an older dataset. No score is ever substituted.
@@ -429,9 +484,20 @@ def metrics():
     }
 
 
+def hash_client_id(client_id):
+    return hashlib.sha256(client_id.encode("ascii")).hexdigest()
+
+
+async def history_client(x_client_id: str = Header(pattern=CLIENT_ID_PATTERN)):
+    """The requesting client's history key. A missing or malformed ID is a 422."""
+    return hash_client_id(x_client_id)
+
+
 @app.get("/history")
-def get_history(limit: int = Query(default=50, ge=1, le=200)):
-    return db_call(lambda: database.list_predictions(limit), "Could not read prediction history.")
+def get_history(limit: int = Query(default=50, ge=1, le=200), client_hash: str = Depends(history_client)):
+    return db_call(
+        lambda: database.list_predictions(client_hash, limit), "Could not read prediction history."
+    )
 
 
 class HistoryEntry(BaseModel):
@@ -445,7 +511,7 @@ class HistoryEntry(BaseModel):
 
 
 @app.post("/history")
-def add_history_entry(entry: HistoryEntry):
+def add_history_entry(entry: HistoryEntry, client_hash: str = Depends(history_client)):
     created_at = entry.created_at
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
@@ -456,6 +522,7 @@ def add_history_entry(entry: HistoryEntry):
         "note": entry.note,
         "error": entry.error,
         "created_at": created_at.astimezone(timezone.utc).isoformat(),
+        "client_hash": client_hash,
     }
     entry_id = db_call(
         lambda: database.add_prediction(payload), "Could not save prediction history."
@@ -464,28 +531,27 @@ def add_history_entry(entry: HistoryEntry):
 
 
 @app.delete("/history")
-def clear_history():
-    db_call(database.clear_predictions, "Could not clear prediction history.")
+def clear_history(client_hash: str = Depends(history_client)):
+    db_call(lambda: database.clear_predictions(client_hash), "Could not clear prediction history.")
     return {"cleared": True}
 
 
 @app.post("/predict")
 @app.post("/predict/", include_in_schema=False)
-async def predict(file: UploadFile = File(...)):
+async def predict(
+    file: UploadFile = File(...),
+    x_client_id: str | None = Header(default=None, pattern=CLIENT_ID_PATTERN),
+):
     # Checked before the upload is written, so an unusable request leaves no file.
     if model is None:
         await file.close()
-        raise HTTPException(
-            status_code=503,
-            detail=MODEL_LOAD_ERROR
-            or "No trained model is available. Run train_5fold.py to create one.",
-        )
+        raise HTTPException(status_code=503, detail=MODEL_UNAVAILABLE)
 
     image_path = await save_upload(file)
 
     try:
         try:
-            image = await run_in_threadpool(load_inference_image, image_path)
+            image = await run_in_threadpool(load_upload, image_path)
         except Exception as error:
             logger.exception("Uploaded file could not be processed as an image.")
             raise HTTPException(
@@ -508,7 +574,12 @@ async def predict(file: UploadFile = File(...)):
         }
         # History stores the result, not a path to an image nobody serves. Keeping
         # every uploaded photo would eventually fill Railway's ephemeral disk.
-        result["history_saved"] = await run_in_threadpool(save_history, result) is not None
+        # Without a client ID (the web page, older app builds) the entry is kept
+        # for the record but belongs to no client, so no one can read it back.
+        client_hash = hash_client_id(x_client_id) if x_client_id else None
+        result["history_saved"] = await run_in_threadpool(
+            save_history, result, client_hash=client_hash
+        ) is not None
         return result
     finally:
         remove_upload(image_path)
