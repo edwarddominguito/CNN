@@ -1,16 +1,16 @@
 batch_id,rice_grade,source_vendor,collection_date,collection_location,product_market_name,grade_verification,number_of_images,notes
-batch_01,Premium,,,,,,29,
-batch_02,Premium,,,,,,30,populated; source and grade verification not recorded
-batch_03,Premium,,,,,,29,populated; source and grade verification not recorded
-batch_04,Premium,,,,,,30,populated; source and grade verification not recorded
-batch_05,Premium,,,,,,29,populated; source and grade verification not recorded
-batch_01,Well-Milled,,,,,,30,
-batch_02,Well-Milled,,,,,,30,populated; source and grade verification not recorded
-batch_03,Well-Milled,,,,,,30,populated; source and grade verification not recorded
-batch_04,Well-Milled,,,,,,30,populated; source and grade verification not recorded
-batch_05,Well-Milled,,,,,,30,populated; source and grade verification not recorded
-batch_01,Poor-Quality-Rice-Mix,,,,,,30,populated; source and grade verification not recorded
-batch_02,Poor-Quality-Rice-Mix,,,,,,30,populated; source and grade verification not recorded
-batch_03,Poor-Quality-Rice-Mix,,,,,,30,populated; source and grade verification not recorded
-batch_04,Poor-Quality-Rice-Mix,,,,,,30,populated; source and grade verification not recorded
-batch_05,Poor-Quality-Rice-Mix,,,,,,30,populated; source and grade verification not recorded
+batch_01,Premium,,,,,,25,
+batch_02,Premium,,,,,,25,populated; source and grade verification not recorded
+batch_03,Premium,,,,,,25,populated; source and grade verification not recorded
+batch_04,Premium,,,,,,25,populated; source and grade verification not recorded
+batch_05,Premium,,,,,,25,populated; source and grade verification not recorded
+batch_01,Well-Milled,,,,,,25,
+batch_02,Well-Milled,,,,,,25,populated; source and grade verification not recorded
+batch_03,Well-Milled,,,,,,25,populated; source and grade verification not recorded
+batch_04,Well-Milled,,,,,,25,populated; source and grade verification not recorded
+batch_05,Well-Milled,,,,,,25,populated; source and grade verification not recorded
+batch_01,Poor-Quality-Rice-Mix,,,,,,25,populated; source and grade verification not recorded
+batch_02,Poor-Quality-Rice-Mix,,,,,,25,populated; source and grade verification not recorded
+batch_03,Poor-Quality-Rice-Mix,,,,,,25,populated; source and grade verification not recorded
+batch_04,Poor-Quality-Rice-Mix,,,,,,25,populated; source and grade verification not recorded
+batch_05,Poor-Quality-Rice-Mix,,,,,,25,populated; source and grade verification not recorded

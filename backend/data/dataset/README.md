@@ -1,17 +1,21 @@
 # Grouped Rice Dataset
 
-## Verified local inventory, 2026-10-21
+## Verified local inventory, 2026-10-23
 
-The local dataset has **447 JPEG photos in 15 populated batch folders**:
+The local dataset has **375 JPEG photos in 15 populated batch folders**:
 
-- Premium: 147 photos; batches 01-05 contain 29, 30, 29, 30 and 29 photos.
-- Well-Milled: 150 photos; five batches of 30 photos each.
-- Poor-Quality-Rice-Mix: 150 photos; five batches of 30 photos each.
+- Premium: 125 photos; five batches of 25 photos each.
+- Well-Milled: 125 photos; five batches of 25 photos each.
+- Poor-Quality-Rice-Mix: 125 photos; five batches of 25 photos each.
 
-All 447 images fully decoded during the audit. No identical file hashes or
-orientation-corrected RGB pixel hashes were found. The largest image contains
-12,192,768 pixels. Grouped five-fold splits contain every grade and keep each
-batch entirely on one side of each training/validation/evaluation split.
+All 375 images fully decoded as RGB JPEGs during the audit. The newest 25 HEIC
+uploads in `Poor-Quality-Rice-Mix/batch_05` were converted in place. No identical
+file hashes or exact RGB pixel duplicates were found. The largest image contains
+12,192,768 pixels.
+The saved 2026-10-23 training run evaluated all 375 images in grouped five-fold
+cross-validation, using 225 training, 75 validation and 75 evaluation images per
+fold. The manifest describes the earlier file audit; its null `grouped_folds`
+field means that audit did not itself generate folds.
 
 These checks prove file integrity and folder separation. They cannot establish
 that batches came from different physical samples or that a grade was correctly
@@ -20,10 +24,13 @@ still need the collector's evidence; no missing metadata has been invented.
 `dataset_manifest.json` records filenames, byte sizes and SHA-256 hashes without
 including the photographs themselves.
 
-The saved model's existing grouped five-fold results report **36.20% mean
-accuracy and 31.22% macro F1**. Those results are preserved honestly. Deployment
-success does not establish reliable grading. This audit did not retrain the
-model or change any photograph, class label or trained weight.
+The current saved model's grouped five-fold results report **80.53% mean accuracy
+and 78.02% macro F1** on these 375 images. Fold accuracies range from 41.33% to
+100%, so performance varies substantially across held-out batches. The
+[preserved evaluation record](../../../docs/model-evaluation/2026-10-23.json)
+includes the detailed folds and matching deployment bundle hashes. File
+conversion alone did not train a model; these results come from the subsequent
+training run. Deployment success does not establish reliable grading.
 
 ## Classification scope
 
@@ -183,7 +190,7 @@ The system `pip` points to Python 3.14 on this computer, so use the Python insid
 
 ## Railway deployment
 
-The photos total approximately **1.61 GiB** and are intentionally excluded from
+The photos total approximately **0.70 GiB** and are intentionally excluded from
 Git and the deployment image. Railway inference uses the saved model and needs
 no dataset or retraining at startup. The required runtime files under
 `backend/artifacts/model/` are included by the repository ignore rules:

@@ -17,7 +17,6 @@ const ICON_PATHS = {
   refresh: "M20 7v5h-5M4 17v-5h5M18.1 9A7 7 0 0 0 6.3 6.6L4 9m2 6a7 7 0 0 0 11.8 2.4L20 15",
   scan: "M7 4H5a1 1 0 0 0-1 1v2m13-3h2a1 1 0 0 1 1 1v2M7 20H5a1 1 0 0 1-1-1v-2m13 3h2a1 1 0 0 0 1-1v-2M7 12h10",
   alert: "M12 8v5m0 4h.01M10.3 4.3 2.7 17.5A1 1 0 0 0 3.6 19h16.8a1 1 0 0 0 .9-1.5L13.7 4.3a2 2 0 0 0-3.4 0Z",
-  timer: "M12 8v5l3 2M9 2h6M12 22a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z",
 };
 
 const Icon = ({ name }) => (
@@ -256,15 +255,6 @@ function App() {
                   />
                 </div>
               </div>
-
-              {result.processing_time_ms && (
-                <div className="meta-line">
-                  <Icon name="timer" />
-                  <span>
-                    Processed in <strong>{result.processing_time_ms} ms</strong>
-                  </span>
-                </div>
-              )}
 
               {result.note && <p className="note">{result.note}</p>}
             </div>

@@ -145,8 +145,6 @@ export async function predictImage(file, {
       predicted_grade: data.predicted_grade,
       confidence,
       note: typeof data.note === "string" ? data.note : null,
-      processing_time_ms: typeof data.processing_time_ms === "number" && Number.isFinite(data.processing_time_ms)
-        ? data.processing_time_ms : null,
     };
   } catch (error) {
     if (timedOut) throw new Error("The request timed out. Please try again in a moment.", { cause: error });

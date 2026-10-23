@@ -62,7 +62,7 @@ class ApiTests(unittest.TestCase):
     def test_predict_real_image_decode_and_cleanup(self):
         response = self.client.post("/predict", files={"file": ("rice.png", png(), "image/png")})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json(), {"predicted_grade": "Premium", "confidence": 80.0, "history_saved": True})
+        self.assertEqual(response.json(), {"predicted_grade": "Premium", "confidence": 80.0, "history_saved": True, "history_id": 42})
         entry = main.database.add_prediction.call_args.args[0]
         self.assertIsNone(entry["image_path"])
         self.assert_no_uploads()
@@ -128,8 +128,20 @@ class ApiTests(unittest.TestCase):
             response = self.client.post("/predict", files={"file": ("rice.png", png())})
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["history_saved"])
+        self.assertNotIn("history_id", response.json())
         self.assert_no_uploads()
         self.assertEqual(self.client.get("/health").status_code, 200)
+
+    def test_identical_predictions_return_their_own_history_ids(self):
+        with patch.object(main.database, "add_prediction", side_effect=[42, 43]):
+            responses = [
+                self.client.post("/predict", files={"file": ("rice.png", png())}, headers=CLIENT)
+                for _ in range(2)
+            ]
+        self.assertEqual([response.status_code for response in responses], [200, 200])
+        self.assertEqual([response.json()["history_id"] for response in responses], [42, 43])
+        self.assertTrue(all(response.json()["history_saved"] for response in responses))
+        self.assert_no_uploads()
 
     def test_database_recovers_after_startup_failure(self):
         main.DATABASE_AVAILABLE = False
@@ -197,6 +209,15 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.post("/history", content=b"x" * (65536 + 1), headers=CLIENT).status_code, 413)
         self.assertEqual(self.client.get("/history?limit=201", headers=CLIENT).status_code, 422)
 
+    def test_history_rejects_timestamps_outside_the_utc_range(self):
+        for timestamp in ("9999-12-31T23:59:59-01:00", "0001-01-01T00:00:00+01:00"):
+            with self.subTest(timestamp=timestamp):
+                response = self.client.post("/history", json={"createdAt": timestamp}, headers=CLIENT)
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertIn("representable in UTC", response.json()["detail"][0]["msg"])
+        main.database.add_prediction.assert_not_called()
+        self.assertEqual(self.client.get("/health").status_code, 200)
+
     def test_history_belongs_to_the_client_that_saved_it(self):
         with patch.object(main.database, "list_predictions", return_value=[]) as listed, \
                 patch.object(main.database, "clear_predictions") as cleared:
@@ -227,7 +248,7 @@ class ApiTests(unittest.TestCase):
         # The web page and older app builds send no ID: still graded and recorded,
         # but owned by no client, so no public client can read the entry back.
         response = self.client.post("/predict", files={"file": ("rice.png", png())})
-        self.assertEqual(response.json(), {"predicted_grade": "Premium", "confidence": 80.0, "history_saved": True})
+        self.assertEqual(response.json(), {"predicted_grade": "Premium", "confidence": 80.0, "history_saved": True, "history_id": 42})
         self.assertIsNone(main.database.add_prediction.call_args.args[0]["client_hash"])
         response = self.client.post("/predict", files={"file": ("rice.png", png())}, headers={"X-Client-Id": "bad id"})
         self.assertEqual(response.status_code, 422)
@@ -372,6 +393,7 @@ class RealModelTests(unittest.TestCase):
                 self.assertGreaterEqual(response.json()["confidence"], 0)
                 self.assertLessEqual(response.json()["confidence"], 100)
                 self.assertTrue(response.json()["history_saved"])
+                self.assertEqual(response.json()["history_id"], 1)
             self.assertFalse(list(Path(directory).rglob("upload_*")))
 
 

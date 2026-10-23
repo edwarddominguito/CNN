@@ -36,7 +36,7 @@ data/dataset/**/*
 !data/dataset/collection_record.csv
 !data/dataset/dataset_manifest.json
 
-# Backups and manifests written by cleanup_batches.py.
+# Local dataset backups and manifest exports.
 dataset_backups/
 dataset_manifest_*.csv
 

@@ -27,9 +27,9 @@ when processing completes, including failed requests.
 
 ## Dataset and saved model
 
-The local audit found 447 readable JPG photographs in 15 non-empty batch folders:
-147 Premium, 150 Well-Milled, and 150 Poor-Quality-Rice-Mix. Each grade has five
-batches. The scanner checks image integrity and duplicate content; the collection
+The 2026-10-23 local audit found 375 readable JPG photographs in 15 non-empty batch
+folders: 125 per grade, with five batches of 25 images in each grade.
+The scanner checks image integrity and duplicate content; the collection
 record still needs source/vendor, collection, and grade-verification evidence to
 establish that the batches represent independent physical samples.
 
@@ -42,10 +42,13 @@ backend/artifacts/model/metrics.json
 ```
 
 A compatible three-class model exists in this checkout. Its saved group-aware
-5-fold evaluation reports **36.2% accuracy**, **32.38% precision**, **36.14% recall**,
-and **31.22% F1**, across 447 images (generated 2026-10-03). These scores are low;
-crash-free serving does not establish reliable rice grading. Preserve the recorded
-scores and improve verified data and evaluation before relying on the grades.
+5-fold evaluation reports **80.53% accuracy**, **83.48% macro precision**,
+**80.53% macro recall**, and **78.02% macro F1**, across 375 images (generated
+2026-10-23). Accuracy varies from 41.33% to 100% across folds, with a 22.80
+percentage-point sample standard deviation. [Detailed fold results and bundle
+hashes](model-evaluation/2026-10-23.json) are preserved with the source.
+Verify sample independence and grade labels and improve evaluation before relying
+on the grades; serving checks do not establish grading reliability.
 
 The grade is the CNN's argmax and confidence is that class's softmax score,
 expressed as a percentage. Training evaluation and serving use the same
@@ -125,7 +128,9 @@ From `my-react-app`, run `npm ci`, `npm run dev` for development, and `npm run l
 browser origin; a separately hosted web client can set `VITE_API_URL` at build
 time. Development API proxy behavior is configured in `vite.config.js`.
 
-From `mobile_app`, run `flutter run`, `flutter analyze`, and `flutter test`.
+From `mobile_app`, use Flutter 3.41.6 (matching CI), then run
+`flutter pub get --enforce-lockfile`, `flutter analyze`, and `flutter test`. CI
+also builds a Flutter web release. Use `flutter run` for device testing.
 Debug and release builds default to `https://cnn-production-c269.up.railway.app`.
 To use another server, supply the address at build/run time instead of editing
 source. Local development can use the computer's LAN address, desktop localhost,
@@ -150,8 +155,9 @@ not require cross-origin browser requests.
   evaluation data is reported as unavailable; scores are never invented. Why a
   model failed to load is written to the server log, not to responses.
 - `POST /predict` returns `predicted_grade`, confidence in 0..100, and
-  `history_saved`. A false `history_saved` means inference succeeded but history
-  persistence failed. An optional `X-Client-Id` header saves the result to that
+  `history_saved`, plus the inserted `history_id` when storage succeeds so clients
+  can associate a photo with the exact record. A false `history_saved` means
+  inference succeeded but history persistence failed. An optional `X-Client-Id` header saves the result to that
   client's history; without it the result belongs to no client.
 - `GET /history?limit=50`, `POST /history`, and `DELETE /history` operate on MySQL
   and require `X-Client-Id` (32-128 letters, digits, `-` or `_`). Each touches

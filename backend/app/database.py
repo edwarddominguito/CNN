@@ -1,5 +1,5 @@
-import os
 import logging
+import os
 from contextlib import contextmanager
 from threading import BoundedSemaphore
 from urllib.parse import unquote, urlsplit
@@ -18,6 +18,7 @@ logger = logging.getLogger("rice_backend.database")
 
 class DatabaseBusyError(RuntimeError):
     """All bounded connection slots are in use; callers should retry later."""
+
 
 def mysql_config():
     """Read Railway's URL or service variables without exposing credentials in logs.
@@ -62,6 +63,7 @@ def mysql_config():
         "password": setting("MYSQL_PASSWORD", "MYSQLPASSWORD", ""),
         "database": setting("MYSQL_DATABASE", "MYSQLDATABASE", "rice_classifier"),
     }
+
 
 # Single source of truth: database column -> JSON key sent to the apps.
 # Adding a column here updates the schema read, the SELECT, and the response.

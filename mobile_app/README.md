@@ -32,6 +32,9 @@ empty server history. The app keeps an offline copy of downloaded history. Histo
 serialized across screens so concurrent saves and refreshes cannot overwrite
 each other. A failed server deletion keeps both local history copies and shows
 a retry message. Animated images are rejected before preview.
+History shows the photo each successful prediction was made from. The photo is
+copied into the app's private folder on the device, never kept on the server,
+and deleted when History is cleared; web builds show a placeholder instead.
 
 The Android project currently uses the debug signing key for release builds.
 Configure your own signing key before publishing through an app store.

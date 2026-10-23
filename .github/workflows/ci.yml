@@ -8,7 +8,33 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  mobile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: mobile_app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.41.6'
+          channel: stable
+          cache: true
+      - name: Install locked Flutter dependencies
+        run: flutter pub get --enforce-lockfile
+      - name: Analyze Flutter application
+        run: flutter analyze --no-pub
+      - name: Flutter regression tests
+        run: flutter test --no-pub
+      - name: Build Flutter web release
+        run: flutter build web --release --no-pub
+
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30

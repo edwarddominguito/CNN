@@ -18,7 +18,7 @@ DATASET_DIR = Path(os.getenv("DATASET_DIR", str(BACKEND_DIR / "data" / "dataset"
 MODEL_DIR = Path(os.getenv("MODEL_DIR", str(BACKEND_DIR / "artifacts" / "model"))).resolve()
 RESULTS_DIR = BACKEND_DIR / "artifacts" / "results"
 
-# Written at runtime by the server. Not regenerable: this is the record of use.
+# Temporary uploads, written by the server and deleted after each prediction.
+# Prediction history lives in MySQL (app/database.py), not here.
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BACKEND_DIR / "storage"))).resolve()
 UPLOADS_DIR = STORAGE_DIR / "uploads"
-DATABASE_PATH = STORAGE_DIR / "rice_grader.db"

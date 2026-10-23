@@ -52,7 +52,10 @@ class AppCard extends StatelessWidget {
 /// A row of icon, title and one supporting line. Tapping it is optional; when
 /// [onTap] is given a chevron appears so the row reads as a link.
 class AppTile extends StatelessWidget {
-  final IconData icon;
+  final IconData? icon;
+
+  /// Shown in place of [icon], such as a photo thumbnail.
+  final Widget? leading;
   final String title;
   final String subtitle;
   final Color iconColor;
@@ -62,14 +65,15 @@ class AppTile extends StatelessWidget {
 
   const AppTile({
     super.key,
-    required this.icon,
+    this.icon,
+    this.leading,
     required this.title,
     required this.subtitle,
     this.iconColor = kPrimaryGreen,
     this.background,
     this.trailing,
     this.onTap,
-  });
+  }) : assert(icon != null || leading != null, 'An AppTile needs an icon or a leading widget.');
 
   @override
   Widget build(BuildContext context) {
@@ -82,10 +86,11 @@ class AppTile extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Icon(icon, size: 20, color: iconColor),
-          ),
+          leading ??
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Icon(icon, size: 20, color: iconColor),
+              ),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
@@ -100,39 +105,6 @@ class AppTile extends StatelessWidget {
           if (trailing != null) ...[const SizedBox(width: 12), trailing!],
           if (trailing == null && onTap != null)
             const Icon(Icons.chevron_right, size: 20, color: kMutedText),
-        ],
-      ),
-    );
-  }
-}
-
-/// Icon, title and a paragraph, stacked. The unit the Guide and About grids
-/// are built from.
-class AppInfoCard extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String text;
-
-  const AppInfoCard({
-    super.key,
-    required this.icon,
-    required this.title,
-    required this.text,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final textTheme = Theme.of(context).textTheme;
-
-    return AppCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 20, color: kPrimaryGreen),
-          const SizedBox(height: 14),
-          Text(title, style: textTheme.titleMedium),
-          const SizedBox(height: 6),
-          Text(text, style: textTheme.bodySmall),
         ],
       ),
     );

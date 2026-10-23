@@ -67,7 +67,10 @@ finished, or waiting for the user — decided by `_buildActions()`.
 
 ### history_screen.dart (StatefulWidget)
 Loads past predictions in `initState()`, keeps them in a `List`, and shows one
-row per prediction. Has Refresh and Clear buttons in the title bar.
+row per prediction. Has Refresh and Clear buttons in the title bar. A successful
+row shows the photo it was classified from as a small thumbnail, or a
+placeholder when this device has no copy; tapping a row with a photo opens it
+larger on its own page.
 
 ### guide_screen.dart (StatelessWidget)
 The Guide tab: a short, grouped list of learning topics (rice grades, quality
@@ -109,9 +112,9 @@ All backend communication, in one class:
 
 | Method | What it does | Backend route |
 | --- | --- | --- |
-| `predictRiceGrade(image)` | uploads a photo, returns the grade | `POST /predict` |
+| `predictRiceGrade(fileName, bytes)` | uploads a photo, returns the grade | `POST /predict` |
 | `getHistory()` | past predictions | `GET /history` |
-| `saveUnsavedPrediction(entry)` | records an answer the backend did not save | `POST /history` |
+| `addToHistory(result, photo)` | files a finished scan: keeps the photo of a successful one, records an answer the backend did not save | `GET /history`, `POST /history` |
 | `clearHistory()` | returns true after confirmed deletion; otherwise keeps local history | `DELETE /history` |
 
 Inside, one small private helper is reused by all of them:
@@ -130,6 +133,15 @@ When the backend cannot be reached, history falls back to a small copy saved on
 the phone with `shared_preferences`. The `history_saved` response flag also
 preserves valid predictions when the backend's database is unavailable.
 Those unsaved entries remain local when the server history is refreshed.
+
+History photos never leave the device. After a successful prediction the
+classified bytes are copied into the app's private folder (`history_photos/`
+in `path_provider`'s application support directory); the web has no such
+folder and shows placeholders. A row the backend saved is tied to its photo by
+row id: right after `/predict`, the newest of this installation's rows with the
+same grade and confidence that has no photo yet. Unsaved entries carry the
+photo's file name themselves. Photos no saved record refers to (a cleared
+History, rows past the 25 listed, a copy that could not be linked) are deleted.
 History operations share a lock across service instances so concurrent screens
 cannot lose saves or restore an old refresh after a confirmed clear. Cache
 writes happen outside timed network callbacks. Unsaved prediction results are
@@ -167,7 +179,9 @@ The helper `toDoubleOrNull()` exists because the backend may send a number
 
 ### models/prediction_history_entry.dart
 One row of the History screen. It has `fromJson()` to read a saved row and
-`toJson()` to write one.
+`toJson()` to write one. `id` is the backend's row id (null for an entry only
+the phone holds) and `imagePath` is the file name of the row's photo in the
+app's private folder.
 
 ---
 
@@ -176,7 +190,7 @@ One row of the History screen. It has `fromJson()` to read a saved row and
 | File | What it is |
 | --- | --- |
 | `widgets/app_scaffold.dart` | `AppNavScaffold` — the frame every screen sits in (title bar + bottom navigation). Also `AppPage`, the scrolling body with standard padding, and `appRoutes`, the list of tabs. |
-| `widgets/app_cards.dart` | The small shared pieces: `AppCard` (the rounded box every screen is built from), `AppTile` (icon + title + one line, tappable), `AppInfoCard`, `AppSectionHeader`, `AppEmptyState`, and `AppCardGrid`. |
+| `widgets/app_cards.dart` | The small shared pieces: `AppCard` (the rounded box every screen is built from), `AppTile` (icon or a leading widget such as a thumbnail + title + one line, tappable), `AppEmptyState`, and `AppCardGrid`. |
 | `widgets/image_preview.dart` | `ImagePreview` — shows the picked photo, or "No sample loaded" when nothing is picked. |
 | `widgets/scan_controls.dart` | `ScanControls` — the Take Photo, Gallery and Classify Rice buttons. Only built when the screen is idle, so it needs no busy state. |
 | `widgets/prediction_result_card.dart` | `PredictionResultCard` — the grade, the model confidence and its bar, plus links to "About This Grade" and "Understanding Confidence" in the Guide. Only ever built for a real prediction; failures are shown by the Scan screen. |
@@ -239,7 +253,7 @@ uploaded over HTTP:
 ```dart
 final request = http.MultipartRequest('POST', Uri.parse('$baseUrl/predict'));
 request.files.add(
-  http.MultipartFile.fromBytes('file', bytes, filename: image.name),
+  http.MultipartFile.fromBytes('file', bytes, filename: fileName),
 );
 ```
 
@@ -354,9 +368,9 @@ answer is valid or invalid — never a percentage.
 
 ---
 
-**FUNCTION:** `predictRiceGrade(XFile image)` — `services/rice_api_service.dart`
-**PURPOSE:** Uploads the image file to `POST /predict`.
-**INPUT:** The picked image file.
+**FUNCTION:** `predictRiceGrade(fileName, bytes)` — `services/rice_api_service.dart`
+**PURPOSE:** Uploads the image to `POST /predict`.
+**INPUT:** The picked file's name and the bytes the Scan screen already read.
 **OUTPUT:** A `PredictionResult`, including a friendly message if the upload
 failed.
 **WHY IT EXISTS:** Keeps HTTP code out of the screens. The screen only says
@@ -368,8 +382,8 @@ failed.
 **PURPOSE:** Tries every backend address until one answers.
 **INPUT:** A function that performs one request against one address.
 **OUTPUT:** The first successful answer, or `null` if none worked.
-**WHY IT EXISTS:** The correct address differs between emulator, browser, and
-real phone. Writing this loop once avoids repeating it in six methods.
+**WHY IT EXISTS:** Every request needs the same timeout, client cleanup and
+error handling. Writing it once keeps the four public methods short.
 
 ---
 

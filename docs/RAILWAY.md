@@ -148,8 +148,9 @@ See [Railway volumes](https://docs.railway.com/volumes).
 
 ## Verify before using the deployment
 
-The GitHub Actions workflow runs backend regression tests, web lint/tests/build,
-and a production Docker build with a temporary MySQL database. It then checks
+The GitHub Actions workflow runs Flutter analysis/tests/web release build,
+backend regression tests, web lint/tests/build, and a production Docker build
+with a temporary MySQL database. It then checks
 readiness, the served web page, history reads, and a real model prediction on a
 synthetic PNG. This checks serving behavior, not grading accuracy.
 
@@ -161,9 +162,11 @@ normalization, history ordering, the composite index, web assets, and history
 persistence across an API process restart. The temporary database and API were
 shut down afterward; the existing local database service was not modified.
 
-Docker was not installed in the local environment, so the actual Linux container
-build and MySQL 8.4 CI workflow still need their first successful run. No Railway
-deployment has been performed here.
+Docker was not installed in the local environment. The GitHub Actions run for
+commit `5633435` subsequently passed the Linux container build and MySQL 8.4
+smoke checks on 22 October 2026 ([run 39718906981](https://github.com/edwarddominguito/CNN/actions/runs/39718906981)).
+Every later model or source update still needs its own successful CI run. This
+repository push does not itself confirm a Railway rollout.
 
 Read-only verification of your deployed service uses only standard Python:
 

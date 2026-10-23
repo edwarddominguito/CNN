@@ -27,7 +27,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from ml.image_preprocessing import CLASS_NAMES, IMAGE_SIZE, load_inference_image
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from app.middleware import RateLimiter, RateLimitMiddleware, RequestLimitsMiddleware
@@ -173,8 +173,7 @@ def model_rejection(loaded_model, saved_names):
     if saved_names != CLASS_NAMES:
         return (
             f"artifacts/model/class_names.json is {saved_names}, but this backend "
-            f"is configured "
-            f"for {CLASS_NAMES}. Retrain with train_5fold.py."
+            f"is configured for {CLASS_NAMES}. Retrain with train_5fold.py."
         )
 
     try:
@@ -216,8 +215,7 @@ def load_model():
     if not labels_exist:
         message = (
             "artifacts/model/class_names.json is missing, so the model's label order "
-            "cannot be "
-            "checked. Retrain with train_5fold.py."
+            "cannot be checked. Retrain with train_5fold.py."
         )
         logger.error(message)
         return None, message
@@ -332,11 +330,7 @@ async def save_upload(file):
                         detail="Image is too large. Maximum upload size is 15 MB.",
                     )
                 buffer.write(chunk)
-    except HTTPException:
-        if path:
-            remove_upload(path)
-        raise
-    except asyncio.CancelledError:
+    except (HTTPException, asyncio.CancelledError):
         if path:
             remove_upload(path)
         raise
@@ -509,19 +503,28 @@ class HistoryEntry(BaseModel):
     error: str | None = Field(default=None, max_length=4000)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), alias="createdAt")
 
+    @field_validator("created_at")
+    @classmethod
+    def normalize_created_at(cls, value):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        try:
+            return value.astimezone(timezone.utc)
+        except (OverflowError, ValueError):
+            # Valid ISO dates at either year boundary can fall outside Python's
+            # supported range after applying the timezone offset.
+            raise ValueError("createdAt must be representable in UTC.") from None
+
 
 @app.post("/history")
 def add_history_entry(entry: HistoryEntry, client_hash: str = Depends(history_client)):
-    created_at = entry.created_at
-    if created_at.tzinfo is None:
-        created_at = created_at.replace(tzinfo=timezone.utc)
     payload = {
         "predicted_grade": entry.predicted_grade,
         "confidence": entry.confidence,
         "image_path": entry.image_path,
         "note": entry.note,
         "error": entry.error,
-        "created_at": created_at.astimezone(timezone.utc).isoformat(),
+        "created_at": entry.created_at.isoformat(),
         "client_hash": client_hash,
     }
     entry_id = db_call(
@@ -577,9 +580,14 @@ async def predict(
         # Without a client ID (the web page, older app builds) the entry is kept
         # for the record but belongs to no client, so no one can read it back.
         client_hash = hash_client_id(x_client_id) if x_client_id else None
-        result["history_saved"] = await run_in_threadpool(
+        history_id = await run_in_threadpool(
             save_history, result, client_hash=client_hash
-        ) is not None
+        )
+        result["history_saved"] = history_id is not None
+        if history_id is not None:
+            # Match the local photo to this exact record even when another
+            # scan returns the same grade and confidence at the same time.
+            result["history_id"] = history_id
         return result
     finally:
         remove_upload(image_path)

@@ -25,12 +25,16 @@ class PredictionResult {
   /// can leave a valid prediction unsaved, so the app keeps those locally too.
   final bool savedByBackend;
 
+  /// The exact backend row created for this scan, when the server supplies it.
+  final int? historyId;
+
   const PredictionResult({
     required this.predictedGrade,
     required this.confidence,
     this.note,
     this.error,
     this.savedByBackend = false,
+    this.historyId,
   });
 
   factory PredictionResult.fromJson(Map<String, dynamic> json) {
@@ -40,6 +44,9 @@ class PredictionResult {
       note: toStringOrNull(json['note']),
       error: toStringOrNull(json['error']),
       savedByBackend: json['history_saved'] != false,
+      historyId: json['history_id'] is int && (json['history_id'] as int) > 0
+          ? json['history_id'] as int
+          : null,
     );
   }
 }

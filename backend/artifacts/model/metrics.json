@@ -1,12 +1,12 @@
 {
-  "accuracy": 36.2,
-  "precision": 32.38,
-  "recall": 36.14,
-  "f1_score": 31.22,
-  "accuracy_std": 22.56,
-  "precision_std": 30.87,
-  "recall_std": 22.56,
-  "f1_score_std": 22.93,
+  "accuracy": 80.53,
+  "precision": 83.48,
+  "recall": 80.53,
+  "f1_score": 78.02,
+  "accuracy_std": 22.8,
+  "precision_std": 21.64,
+  "recall_std": 22.8,
+  "f1_score_std": 27.24,
   "classes": [
     "Premium",
     "Well-Milled",
@@ -42,23 +42,23 @@
   ],
   "per_class": {
     "Premium": {
-      "precision": 26.46,
-      "recall": 48.41,
-      "f1_score": 33.59
+      "precision": 99.23,
+      "recall": 84.8,
+      "f1_score": 87.35
     },
     "Well-Milled": {
-      "precision": 21.03,
-      "recall": 10.0,
-      "f1_score": 13.25
+      "precision": 80.87,
+      "recall": 87.2,
+      "f1_score": 79.24
     },
     "Poor-Quality-Rice-Mix": {
-      "precision": 49.66,
-      "recall": 50.0,
-      "f1_score": 46.81
+      "precision": 70.33,
+      "recall": 69.6,
+      "f1_score": 67.47
     }
   },
   "evaluation_method": "Group-aware stratified 5-fold cross-validation",
   "folds": 5,
-  "evaluation_images": 447,
-  "generated_at": "2026-10-03T10:35:50+00:00"
+  "evaluation_images": 375,
+  "generated_at": "2026-10-23T07:19:44+00:00"
 }

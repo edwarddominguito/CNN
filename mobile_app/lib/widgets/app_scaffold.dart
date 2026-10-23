@@ -55,8 +55,8 @@ const appRoutes = [
 /// The frame every screen is built inside: a plain title row on top, the
 /// screen's own content in the middle, and the tabs at the bottom.
 class AppNavScaffold extends StatelessWidget {
-  /// Index into [appRoutes] of the tab this screen belongs to. A screen that
-  /// is not a tab of its own (About) points at the tab it was opened from.
+  /// Index into [appRoutes] of the tab this screen belongs to. A page opened
+  /// inside a tab, such as a Guide topic, points at that tab.
   final int currentIndex;
   final String title;
   final Widget body;

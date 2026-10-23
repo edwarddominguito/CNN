@@ -13,6 +13,12 @@ dependencies:
 
   http: ^1.6.0                # talks to the FastAPI backend
   image_picker: ^1.2.2        # camera and gallery
+  path_provider: ^2.1.5       # the app's private folder for History photos
+  # Kept on path_provider's platform-channel releases: later ones compile native
+  # JNI (Android) and FFI (iOS) code, and the Android NDK that needs is the one
+  # android/app/build.gradle.kts records as broken on the development machine.
+  path_provider_android: ">=2.2.17 <2.3.0"
+  path_provider_foundation: ">=2.4.0 <2.5.0"
   shared_preferences: ^2.5.5  # offline copy of the prediction history
 
   # Not used directly by this app, but Flutter's built-in text selection menu

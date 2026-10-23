@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../app_colors.dart';
-import '../models/prediction_history_entry.dart';
 import '../models/prediction_result.dart';
 import '../services/image_validation.dart';
 import '../services/rice_api_service.dart';
@@ -19,16 +18,18 @@ import '../widgets/scan_controls.dart';
 ///
 /// Take or choose a photo -> preview it -> press Classify Rice -> the image is
 /// validated here, then sent to FastAPI -> the grade and the model's own
-/// confidence come back.
+/// confidence come back, and History keeps a private copy of the photo.
 class ScanScreen extends StatefulWidget {
-  const ScanScreen({super.key});
+  final ImagePicker? imagePicker;
+
+  const ScanScreen({super.key, this.imagePicker});
 
   @override
   State<ScanScreen> createState() => _ScanScreenState();
 }
 
 class _ScanScreenState extends State<ScanScreen> {
-  final ImagePicker _picker = ImagePicker();
+  late final ImagePicker _picker = widget.imagePicker ?? ImagePicker();
   final RiceApiService _api = RiceApiService();
 
   XFile? image; // the photo the user picked
@@ -48,15 +49,21 @@ class _ScanScreenState extends State<ScanScreen> {
     String? problem;
 
     try {
-      picked = await _picker.pickImage(source: source, imageQuality: 85);
-      if (picked == null) {
-        return; // The user closed the camera or the picker.
-      }
-      if (await picked.length() > maxImageBytes) {
-        problem = 'This image is too large. Please use an image under 15 MB.';
+      // Desktop pickers need a separate camera delegate. Calling one without
+      // it throws a StateError, so check support before opening the picker.
+      if (!_picker.supportsImageSource(source)) {
+        problem = 'The camera is not available on this device. Please select an image from Gallery.';
       } else {
-        bytes = await picked.readAsBytes();
-        problem = await validateImage(picked.name, bytes);
+        picked = await _picker.pickImage(source: source, imageQuality: 85);
+        if (picked == null) {
+          return; // The user closed the camera or the picker.
+        }
+        if (await picked.length() > maxImageBytes) {
+          problem = 'This image is too large. Please use an image under 15 MB.';
+        } else {
+          bytes = await picked.readAsBytes();
+          problem = await validateImage(picked.name, bytes);
+        }
       }
     } on Exception catch (_) {
       // A denied camera or photo permission, or a file the phone cannot read.
@@ -110,19 +117,9 @@ class _ScanScreenState extends State<ScanScreen> {
 
     final result = await _api.predictRiceGrade(picked.name, bytes);
     // Saving does not depend on this screen still being open when the request
-    // finishes. Queue it before navigation can open the History screen.
-    if (!result.savedByBackend) {
-      unawaited(_api.saveUnsavedPrediction(
-        PredictionHistoryEntry(
-          predictedGrade: result.predictedGrade,
-          confidence: result.confidence,
-          createdAt: DateTime.now(),
-          imagePath: picked.path,
-          note: result.note,
-          error: result.error,
-        ),
-      ));
-    }
+    // finishes. Queue it before navigation can open the History screen. The
+    // camera and the gallery both arrive here as the same bytes.
+    unawaited(_api.addToHistory(result, bytes));
     if (!mounted) {
       return;
     }
@@ -132,7 +129,6 @@ class _ScanScreenState extends State<ScanScreen> {
       prediction = result.error == null ? result : null;
       errorMessage = result.error;
     });
-
   }
 
   void resetScan() {

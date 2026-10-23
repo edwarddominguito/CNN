@@ -23,5 +23,5 @@ def use_local_venv():
         raise SystemExit(
             f"Could not restart with the project's Python ({target}): {error}\n"
             "Recreate the virtual environment in backend/.venv and install "
-            "requirements.txt."
+            "requirements-training.txt."
         ) from error

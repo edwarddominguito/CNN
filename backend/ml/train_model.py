@@ -16,8 +16,8 @@ import tensorflow as tf
 
 from ml.image_preprocessing import IMAGE_SIZE, make_dataset
 
-# model_calibration.py looks this layer up by name when it builds the support
-# embedding cache. Renaming it silently disables that cache.
+# model_calibration.py imports this name to find the layer whose output it
+# caches as the support embeddings.
 EMBEDDING_LAYER_NAME = "rice_embedding"
 
 EARLY_STOPPING_PATIENCE = 5
@@ -171,7 +171,7 @@ def train_deployment_model(scanned, best_epochs, batch_size: int, seed: int, mod
     return model
 
 
-def save_calibration_cache(model, scanned, output_path=None) -> None:
+def save_calibration_cache(model, scanned, output_path) -> None:
     """Write artifacts/model/support_embeddings.npz: one embedding per image.
 
     A research side artifact, not part of serving. POST /predict reports the CNN's
@@ -183,8 +183,7 @@ def save_calibration_cache(model, scanned, output_path=None) -> None:
         from ml.model_calibration import save_support_embeddings
 
         samples = list(zip(scanned.labels.tolist(), scanned.paths.tolist()))
-        kwargs = {"output_path": output_path} if output_path is not None else {}
-        count = save_support_embeddings(model, scanned.class_names, samples=samples, **kwargs)
+        count = save_support_embeddings(model, scanned.class_names, samples, output_path)
         print(f"Saved {count} support embedding(s) (not used by /predict).")
     except Exception as error:
         print(f"Warning: could not build the support embedding cache: {error}")

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../app_colors.dart';
@@ -19,12 +21,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
   final RiceApiService _apiService = RiceApiService();
 
   List<PredictionHistoryEntry> entries = [];
+  Directory? photoFolder; // where this device keeps History photos, if anywhere
   bool isLoading = true;
 
   @override
   void initState() {
     super.initState();
     loadHistory();
+    loadPhotoFolder();
   }
 
   Future<void> loadHistory() async {
@@ -41,6 +45,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
       entries = loaded;
       isLoading = false;
     });
+  }
+
+  /// Photos are an extra, so the list never waits for them: the rows show as
+  /// soon as History loads, and the thumbnails once the folder is known.
+  Future<void> loadPhotoFolder() async {
+    final folder = await _apiService.photoFolder();
+    if (!mounted) {
+      return;
+    }
+
+    setState(() => photoFolder = folder);
   }
 
   Future<void> clearHistory() async {
@@ -110,31 +125,41 @@ class _HistoryScreenState extends State<HistoryScreen> {
               : '${entries.length} saved · $failed failed',
           style: Theme.of(context).textTheme.bodySmall,
         ),
-        for (final entry in entries) _HistoryItem(entry: entry),
+        for (final entry in entries)
+          _HistoryItem(
+            entry: entry,
+            photo: RiceApiService.photoFile(photoFolder, entry.imagePath),
+          ),
       ],
     );
   }
 }
 
+String _formatDate(DateTime date) {
+  final local = date.toLocal();
+  final hour = local.hour.toString().padLeft(2, '0');
+  final minute = local.minute.toString().padLeft(2, '0');
+  return '${local.month}/${local.day}/${local.year} $hour:$minute';
+}
+
 class _HistoryItem extends StatelessWidget {
   final PredictionHistoryEntry entry;
 
-  const _HistoryItem({required this.entry});
+  /// The photo this prediction was made from, when this device kept it.
+  final File? photo;
 
-  String _formatDate(DateTime date) {
-    final local = date.toLocal();
-    final hour = local.hour.toString().padLeft(2, '0');
-    final minute = local.minute.toString().padLeft(2, '0');
-    return '${local.month}/${local.day}/${local.year} $hour:$minute';
-  }
+  const _HistoryItem({required this.entry, required this.photo});
 
   @override
   Widget build(BuildContext context) {
     final isError = entry.error != null;
+    final photo = this.photo;
 
     return AppTile(
-      icon: isError ? Icons.error_outline : Icons.check_circle_outline,
-      iconColor: isError ? kErrorText : kPrimaryGreen,
+      // A failed scan keeps no photo, so it shows its error icon instead.
+      icon: isError ? Icons.error_outline : null,
+      iconColor: kErrorText,
+      leading: isError ? null : _Thumbnail(photo: photo),
       background: isError ? kErrorSurface : kSurface,
       // Display only; the saved entry keeps the backend's exact label.
       title: gradeDisplayName(entry.predictedGrade),
@@ -145,6 +170,87 @@ class _HistoryItem extends StatelessWidget {
         _formatDate(entry.createdAt),
         style: Theme.of(context).textTheme.bodySmall?.copyWith(fontSize: 12),
       ),
+      onTap: isError || photo == null ? null : () => _openPhoto(context, entry, photo),
     );
   }
+}
+
+/// A History photo at thumbnail size, or a plain placeholder when this device
+/// has none for the row: on the web, for an older row, or after the file was
+/// removed.
+class _Thumbnail extends StatelessWidget {
+  final File? photo;
+
+  const _Thumbnail({required this.photo});
+
+  static const _size = 40.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final placeholder = Container(
+      width: _size,
+      height: _size,
+      decoration: BoxDecoration(
+        color: kSubtleSurface,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Icon(Icons.image_outlined, size: 20, color: kMutedText),
+    );
+    final photo = this.photo;
+    if (photo == null) {
+      return placeholder;
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: Image.file(
+        photo,
+        width: _size,
+        height: _size,
+        fit: BoxFit.cover,
+        // Decoded small: a full camera photo for every row would hold tens of
+        // megabytes in memory for no visible gain.
+        cacheWidth: 160,
+        errorBuilder: (context, error, stackTrace) => placeholder,
+      ),
+    );
+  }
+}
+
+/// Opens [photo] on its own page, the way Guide topics open. A second tap that
+/// lands while the page is still opening is ignored.
+void _openPhoto(BuildContext context, PredictionHistoryEntry entry, File photo) {
+  final route = ModalRoute.of(context);
+  if (route != null && !route.isCurrent) {
+    return;
+  }
+  Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (context) => AppNavScaffold(
+        currentIndex: 2,
+        title: gradeDisplayName(entry.predictedGrade),
+        isSubPage: true,
+        body: AppPage(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.file(
+                photo,
+                cacheWidth: 1080, // the same ceiling as the Scan preview
+                errorBuilder: (context, error, stackTrace) => const AppEmptyState(
+                  icon: Icons.broken_image_outlined,
+                  title: 'Photo unavailable',
+                  message: 'This photo is no longer on this device.',
+                ),
+              ),
+            ),
+            Text(
+              '${entry.confidence.toStringAsFixed(2)}% confidence · ${_formatDate(entry.createdAt)}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }

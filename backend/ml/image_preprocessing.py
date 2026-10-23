@@ -119,16 +119,6 @@ def is_image(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
 
 
-def image_is_readable(path: Path) -> bool:
-    """Open the file once up front so a corrupt image cannot crash training later."""
-    try:
-        with load_rgb_image(path):
-            pass
-        return True
-    except (OSError, ValueError, Image.DecompressionBombError):
-        return False
-
-
 def scan_batches(class_dir: Path, fingerprints=None) -> tuple:
     """Map every batch folder inside one grade to its readable images.
 
@@ -375,10 +365,9 @@ def load_image(path, label, training: bool):
         return tf.ensure_shape(tf.cast(image, tf.float32), [*IMAGE_SIZE, 3]), label
     image = tf.ensure_shape(image, [None, None, 3])
 
-    if training:
-        scale = tf.random.uniform([], TRAIN_CROP_MIN, TRAIN_CROP_MAX)
-        vertical = tf.random.uniform([], 0.0, 1.0)
-        horizontal = tf.random.uniform([], 0.0, 1.0)
+    scale = tf.random.uniform([], TRAIN_CROP_MIN, TRAIN_CROP_MAX)
+    vertical = tf.random.uniform([], 0.0, 1.0)
+    horizontal = tf.random.uniform([], 0.0, 1.0)
     image = square_crop(image, scale, vertical, horizontal)
     image = tf.image.resize(image, IMAGE_SIZE, antialias=True)
     return tf.clip_by_value(image, 0.0, 255.0), label

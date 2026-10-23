@@ -1,0 +1,334 @@
+{
+  "schema_version": 1,
+  "recorded_on": "2026-10-23",
+  "description": "Existing grouped cross-validation results preserved with the deployment bundle hashes; no retraining was performed for this record.",
+  "artifacts": {
+    "backend/artifacts/model/rice_cnn_model.keras": {
+      "sha256": "ba24932882e846b2f98b0ed02e348cc0f4ecc8b2713b480f0335c6c3e8aaa137",
+      "bytes": 11619582
+    },
+    "backend/artifacts/model/metrics.json": {
+      "sha256": "01e79a5e0992db5295b4f8bb80086f05269c90f3036014572aedca38be244a34",
+      "bytes": 1321
+    },
+    "backend/artifacts/model/class_names.json": {
+      "sha256": "ddd4d201dc36c95e393033059038ff547ee00189451c18eb25f56ad8532056d3",
+      "bytes": 63
+    }
+  },
+  "metrics": {
+    "accuracy": 80.53,
+    "precision": 83.48,
+    "recall": 80.53,
+    "f1_score": 78.02,
+    "accuracy_std": 22.8,
+    "precision_std": 21.64,
+    "recall_std": 22.8,
+    "f1_score_std": 27.24,
+    "classes": [
+      "Premium",
+      "Well-Milled",
+      "Poor-Quality-Rice-Mix"
+    ],
+    "all_classes": [
+      "Premium",
+      "Well-Milled",
+      "Poor-Quality-Rice-Mix"
+    ],
+    "trained_classes": [
+      "Premium",
+      "Well-Milled",
+      "Poor-Quality-Rice-Mix"
+    ],
+    "reserved_classes": [],
+    "class_status": [
+      {
+        "name": "Premium",
+        "trained": true,
+        "status": "trained"
+      },
+      {
+        "name": "Well-Milled",
+        "trained": true,
+        "status": "trained"
+      },
+      {
+        "name": "Poor-Quality-Rice-Mix",
+        "trained": true,
+        "status": "trained"
+      }
+    ],
+    "per_class": {
+      "Premium": {
+        "precision": 99.23,
+        "recall": 84.8,
+        "f1_score": 87.35
+      },
+      "Well-Milled": {
+        "precision": 80.87,
+        "recall": 87.2,
+        "f1_score": 79.24
+      },
+      "Poor-Quality-Rice-Mix": {
+        "precision": 70.33,
+        "recall": 69.6,
+        "f1_score": 67.47
+      }
+    },
+    "evaluation_method": "Group-aware stratified 5-fold cross-validation",
+    "folds": 5,
+    "evaluation_images": 375,
+    "generated_at": "2026-10-23T07:19:44+00:00"
+  },
+  "fold_results": [
+    {
+      "accuracy": 0.41333333333333333,
+      "precision": 0.45588235294117646,
+      "recall": 0.41333333333333333,
+      "f1_score": 0.3082437275985663,
+      "per_class": {
+        "Premium": {
+          "precision": 1.0,
+          "recall": 0.24,
+          "f1_score": 0.3870967741935484,
+          "support": 25
+        },
+        "Well-Milled": {
+          "precision": 0.36764705882352944,
+          "recall": 1.0,
+          "f1_score": 0.5376344086021505,
+          "support": 25
+        },
+        "Poor-Quality-Rice-Mix": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1_score": 0.0,
+          "support": 25
+        }
+      },
+      "confusion_matrix": [
+        [
+          6,
+          18,
+          1
+        ],
+        [
+          0,
+          25,
+          0
+        ],
+        [
+          0,
+          25,
+          0
+        ]
+      ],
+      "fold": 1,
+      "best_epoch": 5,
+      "seconds": 296.6,
+      "training_images": 225,
+      "validation_images": 75,
+      "evaluation_images": 75
+    },
+    {
+      "accuracy": 0.8266666666666667,
+      "precision": 0.879071379071379,
+      "recall": 0.8266666666666667,
+      "f1_score": 0.8118308061382065,
+      "per_class": {
+        "Premium": {
+          "precision": 0.9615384615384616,
+          "recall": 1.0,
+          "f1_score": 0.9803921568627451,
+          "support": 25
+        },
+        "Well-Milled": {
+          "precision": 0.6756756756756757,
+          "recall": 1.0,
+          "f1_score": 0.8064516129032258,
+          "support": 25
+        },
+        "Poor-Quality-Rice-Mix": {
+          "precision": 1.0,
+          "recall": 0.48,
+          "f1_score": 0.6486486486486487,
+          "support": 25
+        }
+      },
+      "confusion_matrix": [
+        [
+          25,
+          0,
+          0
+        ],
+        [
+          0,
+          25,
+          0
+        ],
+        [
+          1,
+          12,
+          12
+        ]
+      ],
+      "fold": 2,
+      "best_epoch": 5,
+      "seconds": 276.7,
+      "training_images": 225,
+      "validation_images": 75,
+      "evaluation_images": 75
+    },
+    {
+      "accuracy": 0.9066666666666666,
+      "precision": 0.9270833333333334,
+      "recall": 0.9066666666666666,
+      "f1_score": 0.9048007615939073,
+      "per_class": {
+        "Premium": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1_score": 1.0,
+          "support": 25
+        },
+        "Well-Milled": {
+          "precision": 1.0,
+          "recall": 0.72,
+          "f1_score": 0.8372093023255814,
+          "support": 25
+        },
+        "Poor-Quality-Rice-Mix": {
+          "precision": 0.78125,
+          "recall": 1.0,
+          "f1_score": 0.8771929824561403,
+          "support": 25
+        }
+      },
+      "confusion_matrix": [
+        [
+          25,
+          0,
+          0
+        ],
+        [
+          0,
+          18,
+          7
+        ],
+        [
+          0,
+          0,
+          25
+        ]
+      ],
+      "fold": 3,
+      "best_epoch": 5,
+      "seconds": 275.4,
+      "training_images": 225,
+      "validation_images": 75,
+      "evaluation_images": 75
+    },
+    {
+      "accuracy": 0.88,
+      "precision": 0.9117647058823529,
+      "recall": 0.88,
+      "f1_score": 0.8759818106655644,
+      "per_class": {
+        "Premium": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1_score": 1.0,
+          "support": 25
+        },
+        "Well-Milled": {
+          "precision": 1.0,
+          "recall": 0.64,
+          "f1_score": 0.7804878048780488,
+          "support": 25
+        },
+        "Poor-Quality-Rice-Mix": {
+          "precision": 0.7352941176470589,
+          "recall": 1.0,
+          "f1_score": 0.847457627118644,
+          "support": 25
+        }
+      },
+      "confusion_matrix": [
+        [
+          25,
+          0,
+          0
+        ],
+        [
+          0,
+          16,
+          9
+        ],
+        [
+          0,
+          0,
+          25
+        ]
+      ],
+      "fold": 4,
+      "best_epoch": 6,
+      "seconds": 304.9,
+      "training_images": 225,
+      "validation_images": 75,
+      "evaluation_images": 75
+    },
+    {
+      "accuracy": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "per_class": {
+        "Premium": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1_score": 1.0,
+          "support": 25
+        },
+        "Well-Milled": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1_score": 1.0,
+          "support": 25
+        },
+        "Poor-Quality-Rice-Mix": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1_score": 1.0,
+          "support": 25
+        }
+      },
+      "confusion_matrix": [
+        [
+          25,
+          0,
+          0
+        ],
+        [
+          0,
+          25,
+          0
+        ],
+        [
+          0,
+          0,
+          25
+        ]
+      ],
+      "fold": 5,
+      "best_epoch": 1,
+      "seconds": 171.7,
+      "training_images": 225,
+      "validation_images": 75,
+      "evaluation_images": 75
+    }
+  ],
+  "limitations": [
+    "Physical batch independence and grade provenance remain unverified.",
+    "Cross-validation evaluates the training procedure, not an independent holdout test of the final model."
+  ]
+}

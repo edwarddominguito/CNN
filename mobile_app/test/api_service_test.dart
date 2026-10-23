@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:mobile_app/models/prediction_history_entry.dart';
+import 'package:mobile_app/models/prediction_result.dart';
 import 'package:mobile_app/services/api_config.dart';
 import 'package:mobile_app/services/image_validation.dart';
 import 'package:mobile_app/services/rice_api_service.dart';
@@ -31,6 +33,43 @@ void main() {
     clientFactory: () => client,
     uploadTimeout: timeout ?? const Duration(seconds: 2),
   );
+  const unsaved = PredictionResult(predictedGrade: 'Premium', confidence: 98.7);
+
+  // A temporary photo folder per test, so no test touches a real app folder.
+  Future<Directory> tempPhotoFolder() async {
+    final folder = await Directory.systemTemp.createTemp('history_photos_test');
+    addTearDown(() => folder.delete(recursive: true));
+    return folder;
+  }
+
+  // Answers like the backend: /predict saves a row without a photo, taking
+  // its result from [replies], and /history lists the newest rows or clears them.
+  http.Client fakeBackend(List<Map<String, Object>> rows, List<(String, double)> replies, {
+    bool includeHistoryId = true,
+  }) {
+    return MockClient((request) async {
+      if (request.url.path == '/predict') {
+        final (grade, confidence) = replies.removeAt(0);
+        rows.insert(0, {
+          'id': rows.length + 1,
+          'predictedGrade': grade,
+          'confidence': confidence,
+          'createdAt': DateTime.utc(2026, 1, 1, 0, rows.length).toIso8601String(),
+        });
+        return http.Response(jsonEncode({
+          'predicted_grade': grade,
+          'confidence': confidence,
+          if (includeHistoryId) 'history_id': rows.first['id'],
+        }), 200);
+      }
+      if (request.method == 'DELETE') {
+        rows.clear();
+        return http.Response('{}', 200);
+      }
+      final limit = int.parse(request.url.queryParameters['limit'] ?? '50');
+      return http.Response(jsonEncode(rows.take(limit).toList()), 200);
+    });
+  }
 
   setUp(() {
     SharedPreferences.setMockInitialValues({});
@@ -49,9 +88,7 @@ void main() {
     final api = service(client);
     await api.predictRiceGrade('rice.jpg', image);
     await api.getHistory();
-    await api.saveUnsavedPrediction(PredictionHistoryEntry(
-      predictedGrade: 'Premium', confidence: 98.7, createdAt: DateTime.utc(2026, 1, 2),
-    ));
+    await api.addToHistory(unsaved, image);
     expect(await api.clearHistory(), isTrue);
 
     expect(sent, hasLength(4));
@@ -174,9 +211,7 @@ void main() {
 
   test('history refresh preserves results left unsaved during a database outage', () async {
     final offline = RiceApiService(baseUrls: []);
-    await offline.saveUnsavedPrediction(PredictionHistoryEntry(
-      predictedGrade: 'Premium', confidence: 98.7, createdAt: DateTime.utc(2026, 1, 2),
-    ));
+    await offline.addToHistory(unsaved, image);
     final client = TrackingClient((request) async => http.Response('[]', 200));
     expect((await service(client).getHistory()).single.predictedGrade, 'Premium');
     expect((await offline.getHistory()).single.predictedGrade, 'Premium');
@@ -199,11 +234,8 @@ void main() {
   test('simultaneous offline saves from different screens retain both records', () async {
     final first = RiceApiService(baseUrls: []);
     final second = RiceApiService(baseUrls: []);
-    PredictionHistoryEntry entry(int day) => PredictionHistoryEntry(
-      predictedGrade: 'Premium', confidence: 98.7, createdAt: DateTime.utc(2026, 1, day),
-    );
     await Future.wait([
-      first.saveUnsavedPrediction(entry(1)), second.saveUnsavedPrediction(entry(2)),
+      first.addToHistory(unsaved, image), second.addToHistory(unsaved, image),
     ]);
     expect(await first.getHistory(), hasLength(2));
     final prefs = await SharedPreferences.getInstance();
@@ -228,5 +260,197 @@ void main() {
     await refreshing;
     await clearing;
     expect(await RiceApiService(baseUrls: []).getHistory(), isEmpty);
+  });
+
+  group('History photos', () {
+    test('identical overlapping predictions keep the photo for their exact row', () async {
+      final folder = await tempPhotoFolder();
+      final backend = fakeBackend([], [('Premium', 98.7), ('Premium', 98.7)]);
+      final api = RiceApiService(
+        baseUrls: hosts, clientFactory: () => backend, photoFolder: () async => folder,
+      );
+      final firstPhoto = Uint8List.fromList([1, 1]);
+      final secondPhoto = Uint8List.fromList([2, 2]);
+      // Both backend rows exist before the first screen gets to save its photo.
+      final first = await api.predictRiceGrade('first.jpg', firstPhoto);
+      final second = await api.predictRiceGrade('second.jpg', secondPhoto);
+      expect(first.historyId, 1);
+      expect(second.historyId, 2);
+      await api.addToHistory(first, firstPhoto);
+      await api.addToHistory(second, secondPhoto);
+
+      final history = await api.getHistory();
+      for (final entry in history) {
+        expect(await RiceApiService.photoFile(folder, entry.imagePath)!.readAsBytes(),
+            entry.id == first.historyId ? firstPhoto : secondPhoto);
+      }
+    });
+
+    test('an exact saved row stays available when history goes offline immediately', () async {
+      final folder = await tempPhotoFolder();
+      final client = MockClient((request) async => request.url.path == '/predict'
+          ? http.Response(jsonEncode({
+              'predicted_grade': 'Premium', 'confidence': 98.7, 'history_id': 42,
+            }), 200)
+          : http.Response('Unavailable', 503));
+      final api = RiceApiService(
+        baseUrls: hosts, clientFactory: () => client, photoFolder: () async => folder,
+      );
+      await api.addToHistory(await api.predictRiceGrade('rice.jpg', image), image);
+      final row = (await api.getHistory()).single;
+      expect(row.id, 42);
+      expect(await RiceApiService.photoFile(folder, row.imagePath)!.readAsBytes(), image);
+    });
+
+    test('an older server with ambiguous rows cannot attach the wrong photo', () async {
+      final folder = await tempPhotoFolder();
+      final backend = fakeBackend([], [('Premium', 98.7), ('Premium', 98.7)],
+          includeHistoryId: false);
+      final api = RiceApiService(
+        baseUrls: hosts, clientFactory: () => backend, photoFolder: () async => folder,
+      );
+      final first = await api.predictRiceGrade('first.jpg', image);
+      await api.predictRiceGrade('second.jpg', image);
+      await api.addToHistory(first, image);
+      expect((await api.getHistory()).map((row) => row.imagePath), everyElement(isNull));
+      expect(await folder.list().toList(), isEmpty);
+    });
+
+    test('each photo stays with its own result, after a restart and offline', () async {
+      final folder = await tempPhotoFolder();
+      final backend = fakeBackend([], [('Premium', 98.7), ('Well-Milled', 64.2), ('Premium', 98.7)],
+          includeHistoryId: false);
+      RiceApiService api() => RiceApiService(
+        baseUrls: hosts, clientFactory: () => backend, photoFolder: () async => folder,
+      );
+      final photos = [for (var i = 1; i <= 3; i++) Uint8List.fromList([i, i])];
+      for (final photo in photos) {
+        final scan = api();
+        await scan.addToHistory(await scan.predictRiceGrade('rice.jpg', photo), photo);
+      }
+
+      // A restart keeps nothing in memory, only what the device stored.
+      RiceApiService.forgetClientId();
+      final history = await api().getHistory();
+      expect(history.map((entry) => entry.predictedGrade), ['Premium', 'Well-Milled', 'Premium']);
+      for (final (index, entry) in history.indexed) {
+        expect(await RiceApiService.photoFile(folder, entry.imagePath)!.readAsBytes(), photos[2 - index]);
+      }
+      final offline = await RiceApiService(baseUrls: [], photoFolder: () async => folder).getHistory();
+      expect(offline.map((entry) => entry.imagePath), history.map((entry) => entry.imagePath));
+    });
+
+    test('a deleted photo file leaves History intact', () async {
+      final folder = await tempPhotoFolder();
+      final backend = fakeBackend([], [('Premium', 98.7)]);
+      final api = RiceApiService(
+        baseUrls: hosts, clientFactory: () => backend, photoFolder: () async => folder,
+      );
+      await api.addToHistory(await api.predictRiceGrade('rice.jpg', image), image);
+      await for (final file in folder.list()) {
+        await file.delete();
+      }
+      expect((await api.getHistory()).single.predictedGrade, 'Premium');
+    });
+
+    test('a failed prediction, or one whose row cannot be found, keeps no photo', () async {
+      final folder = await tempPhotoFolder();
+      final failing = RiceApiService(
+        baseUrls: hosts, photoFolder: () async => folder,
+        clientFactory: () => MockClient((request) async => http.Response('Unavailable', 503)),
+      );
+      await failing.addToHistory(await failing.predictRiceGrade('rice.jpg', image), image);
+      // Saved by /predict, but History cannot be read to find its row.
+      final unlinkable = RiceApiService(
+        baseUrls: hosts, photoFolder: () async => folder,
+        clientFactory: () => MockClient((request) async => request.method == 'POST'
+            ? http.Response(jsonEncode({'predicted_grade': 'Premium', 'confidence': 98.7}), 200)
+            : http.Response('Unavailable', 503)),
+      );
+      await unlinkable.addToHistory(await unlinkable.predictRiceGrade('rice.jpg', image), image);
+
+      expect(await folder.list().toList(), isEmpty);
+      final kept = await RiceApiService(baseUrls: [], photoFolder: () async => folder).getHistory();
+      expect(kept.single.error, isNotNull); // The failure is still listed, without a photo.
+      expect(kept.single.imagePath, isNull);
+    });
+
+    test('a prediction a database outage left unsaved keeps its photo', () async {
+      final folder = await tempPhotoFolder();
+      final api = RiceApiService(
+        baseUrls: hosts, photoFolder: () async => folder,
+        clientFactory: () => MockClient((request) async => request.url.path == '/predict'
+            ? http.Response(jsonEncode({
+                'predicted_grade': 'Premium', 'confidence': 98.7, 'history_saved': false,
+              }), 200)
+            : http.Response('Unavailable', 503)),
+      );
+      await api.addToHistory(await api.predictRiceGrade('rice.jpg', image), image);
+      final entry = (await RiceApiService(baseUrls: [], photoFolder: () async => folder).getHistory()).single;
+      expect(await RiceApiService.photoFile(folder, entry.imagePath)!.readAsBytes(), image);
+    });
+
+    test('a recovered history save keeps its exact row and local photo on refresh', () async {
+      final folder = await tempPhotoFolder();
+      final client = MockClient((request) async {
+        if (request.method == 'POST') return http.Response('{"id":42,"saved":true}', 200);
+        // The server does not need the device's private file name to list rows.
+        return http.Response(jsonEncode([{
+          'id': 42, 'predictedGrade': 'Premium', 'confidence': 98.7,
+          'createdAt': DateTime.now().toUtc().toIso8601String(),
+        }]), 200);
+      });
+      final api = RiceApiService(
+        baseUrls: hosts, clientFactory: () => client, photoFolder: () async => folder,
+      );
+      await api.addToHistory(unsaved, image);
+      final offline = RiceApiService(baseUrls: [], photoFolder: () async => folder);
+      expect((await offline.getHistory()).single.id, 42);
+      final refreshed = (await api.getHistory()).single;
+      expect(refreshed.id, 42);
+      expect(await RiceApiService.photoFile(folder, refreshed.imagePath)!.readAsBytes(), image);
+    });
+
+    test('clearing History deletes its photos', () async {
+      final folder = await tempPhotoFolder();
+      final backend = fakeBackend([], [('Premium', 98.7)]);
+      final api = RiceApiService(
+        baseUrls: hosts, clientFactory: () => backend, photoFolder: () async => folder,
+      );
+      await api.addToHistory(await api.predictRiceGrade('rice.jpg', image), image);
+      expect(await folder.list().toList(), hasLength(1));
+      expect(await api.clearHistory(), isTrue);
+      expect(await folder.list().toList(), isEmpty);
+    });
+
+    test('photos of rows that drop out of History are deleted', () async {
+      final folder = await tempPhotoFolder();
+      final stray = await File('${folder.path}/left-by-an-interrupted-save').create();
+      final backend = fakeBackend([], [for (var i = 0; i < 26; i++) ('Premium', 50.0 + i)]);
+      final api = RiceApiService(
+        baseUrls: hosts, clientFactory: () => backend, photoFolder: () async => folder,
+      );
+      for (var i = 0; i < 26; i++) {
+        final photo = Uint8List.fromList([i]);
+        await api.addToHistory(await api.predictRiceGrade('rice.jpg', photo), photo);
+      }
+
+      expect(await stray.exists(), isFalse);
+      final history = await api.getHistory();
+      expect(history, hasLength(25));
+      expect(await folder.list().toList(), hasLength(25));
+      for (final entry in history) {
+        expect(await RiceApiService.photoFile(folder, entry.imagePath)!.exists(), isTrue);
+      }
+    });
+
+    test('a stored photo name can never point outside the photo folder', () {
+      final folder = Directory('photos');
+      expect(RiceApiService.photoFile(folder, '1700000000000000')?.path, 'photos/1700000000000000');
+      for (final name in ['../shared_prefs.xml', r'..\secret', '/data/user/0/app/cache/x.jpg']) {
+        expect(RiceApiService.photoFile(folder, name), isNull);
+      }
+      expect(RiceApiService.photoFile(null, '1700000000000000'), isNull);
+    });
   });
 }

@@ -44,7 +44,7 @@ try:
 except ModuleNotFoundError as error:
     sys.exit(
         f"Missing Python package '{error.name}'. Install the requirements with:\n"
-        r"  .\.venv\Scripts\python.exe -m pip install -r requirements.txt"
+        r"  .\.venv\Scripts\python.exe -m pip install -r requirements-training.txt"
     )
 
 from ml import evaluate_model, train_model

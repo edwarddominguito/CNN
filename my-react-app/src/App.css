@@ -312,7 +312,6 @@ h2 {
 
 .grade-card,
 .metric-block,
-.meta-line,
 .note {
   border: 1px solid var(--color-border);
   border-radius: 8px;
@@ -357,22 +356,12 @@ h2 {
   transition: width 520ms ease;
 }
 
-.meta-line {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
-  color: var(--color-text-muted);
-}
-
 .note { padding: 14px 16px; }
 
 .tone-gold { border-color: #e7c46a; background: #fff8df; }
 
 .tone-green,
 .tone-good { background: #2f6f4e; }
-
-.tone-blue { border-color: #9fc5e8; background: #eef7ff; }
 
 .tone-red,
 .tone-danger { background: #d14337; }

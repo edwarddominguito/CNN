@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' show Random;
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/prediction_history_entry.dart';
@@ -13,28 +15,35 @@ import 'api_config.dart';
 /// Everything the app sends to, or reads from, the FastAPI backend.
 ///
 /// If the backend cannot be reached, the history is kept in a small copy on
-/// the phone so the History screen still has something to show.
+/// the phone so the History screen still has something to show. The photo of
+/// each successful scan is kept the same way, in the app's private folder;
+/// the backend never keeps photos.
 ///
 /// No method here throws. A screen that called one of these can always show
 /// its answer and stop its spinner, whatever went wrong underneath.
 class RiceApiService {
   final http.Client Function() _clientFactory;
   final List<String>? _baseUrls;
+  final Future<Directory?> Function() _photoFolder;
   final Duration _uploadTimeout;
   final Duration _quickTimeout;
 
   RiceApiService({
     http.Client Function()? clientFactory,
     List<String>? baseUrls,
+    Future<Directory?> Function()? photoFolder,
     Duration uploadTimeout = const Duration(seconds: 120),
     Duration quickTimeout = const Duration(seconds: 5),
   }) : _clientFactory = clientFactory ?? http.Client.new,
        _baseUrls = baseUrls,
+       _photoFolder = photoFolder ?? _appPhotoFolder,
        _uploadTimeout = uploadTimeout,
        _quickTimeout = quickTimeout;
 
   static const _historyKey = 'prediction_history';
   static const _unsavedHistoryKey = 'unsaved_prediction_history';
+  // Backend row id -> name of its photo, for the rows /predict saves itself.
+  static const _photoLinksKey = 'history_photo_links';
   static const _clientIdKey = 'history_client_id';
   static const _historyLimit = 25;
   // Screens use separate service instances but share the same local store.
@@ -75,6 +84,30 @@ class RiceApiService {
     return [
       for (var i = 0; i < 16; i++) random.nextInt(256).toRadixString(16).padLeft(2, '0'),
     ].join();
+  }
+
+  /// The app's private folder for History photos. A browser gives a web app no
+  /// private files, so the web keeps none.
+  static Future<Directory?> _appPhotoFolder() async {
+    if (kIsWeb) return null;
+    final support = await getApplicationSupportDirectory();
+    return Directory('${support.path}/history_photos');
+  }
+
+  /// Where this device keeps History photos, or null when it keeps none.
+  Future<Directory?> photoFolder() async {
+    try {
+      return await _photoFolder();
+    } catch (_) {
+      return null; // History still works, with placeholders instead of photos.
+    }
+  }
+
+  /// The History photo called [name] in [folder]. Only a plain file name is
+  /// accepted, so a stored value can never point outside the folder.
+  static File? photoFile(Directory? folder, String? name) {
+    if (folder == null || name == null || name.contains(RegExp(r'[/\\]'))) return null;
+    return File('${folder.path}/$name');
   }
 
   Future<T> _withHistoryLock<T>(Future<T> Function() operation) async {
@@ -137,7 +170,105 @@ class RiceApiService {
 
   /// The backend's history when it is reachable, otherwise the phone's copy.
   Future<List<PredictionHistoryEntry>> getHistory() => _withHistoryLock(() async {
-    final remoteEntries = await _tryEachHost<List<PredictionHistoryEntry>>((baseUrl, client) async {
+    final remoteEntries = await _fetchHistory();
+    if (remoteEntries == null) return _readLocalHistory();
+
+    // Rows saved by /predict carry no photo; this device's own are added here.
+    final photos = await _readPhotoLinks();
+    final entries = [
+      for (final entry in remoteEntries) entry.withImagePath(entry.imagePath ?? photos[entry.id]),
+      ...await _readLocalHistory(key: _unsavedHistoryKey),
+    ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    await _writeLocalHistory(entries);
+    return entries.take(_historyLimit).toList();
+  });
+
+  /// Files a finished scan in History. A successful prediction also keeps a
+  /// private copy of [photo] for the History screen; a failure keeps none.
+  Future<void> addToHistory(PredictionResult result, Uint8List photo) => _withHistoryLock(() async {
+    final photoName = result.error == null ? await _savePhoto(photo) : null;
+    if (!result.savedByBackend) {
+      // A failure, or a prediction a database outage left unsaved.
+      await _saveUnsaved(PredictionHistoryEntry(
+        predictedGrade: result.predictedGrade,
+        confidence: result.confidence,
+        createdAt: DateTime.now(),
+        imagePath: photoName,
+        note: result.note,
+        error: result.error,
+      ));
+    } else {
+      if (result.historyId != null) {
+        // Keep the exact saved row immediately. A connection lost after the
+        // prediction reply must not hide the result or discard its photo.
+        final previous = await _readLocalHistory();
+        await _writeLocalHistory([
+          PredictionHistoryEntry(
+            id: result.historyId,
+            predictedGrade: result.predictedGrade,
+            confidence: result.confidence,
+            createdAt: DateTime.now(),
+            imagePath: photoName,
+            note: result.note,
+            error: result.error,
+          ),
+          ...previous.where((entry) => entry.id != result.historyId),
+        ]);
+      }
+      if (photoName != null) await _linkPhoto(result, photoName);
+    }
+    // Removes a photo that could not be linked to its row, and the photos of
+    // rows that have dropped out of History.
+    await _deleteUnusedPhotos();
+  });
+
+  Future<void> _saveUnsaved(PredictionHistoryEntry entry) async {
+    final saved = await _tryEachHost<Map<String, dynamic>>((baseUrl, client) async {
+      final response = await client
+          .post(
+            Uri.parse('$baseUrl/history'),
+            headers: {'Content-Type': 'application/json', ...await _clientHeaders()},
+            body: jsonEncode(entry.toJson()),
+          )
+          .timeout(_quickTimeout);
+      return response.statusCode == 200 ? _decodeObject(response.body) : null;
+    });
+
+    var cached = entry;
+    if (saved == null) {
+      final unsaved = [entry, ...await _readLocalHistory(key: _unsavedHistoryKey)];
+      await _writeLocalHistory(unsaved, key: _unsavedHistoryKey);
+    } else {
+      final rowId = saved['id'];
+      if (rowId is int && rowId > 0) {
+        cached = PredictionHistoryEntry.fromJson({...entry.toJson(), 'id': rowId});
+        if (entry.imagePath != null) await _storePhotoLink(rowId, entry.imagePath!);
+      }
+    }
+    await _writeLocalHistory([cached, ...await _readLocalHistory()]);
+  }
+
+  /// Failed server deletion must preserve the local copies for a later retry.
+  Future<bool> clearHistory() => _withHistoryLock(() async {
+    final cleared = await _tryEachHost<bool>((baseUrl, client) async {
+      final response = await client
+          .delete(Uri.parse('$baseUrl/history'), headers: await _clientHeaders())
+          .timeout(_quickTimeout);
+      return response.statusCode == 200 ? true : null;
+    });
+
+    if (cleared != true) return false;
+    await _writeLocalHistory([]);
+    await _writeLocalHistory([], key: _unsavedHistoryKey);
+    await _writePhotoLinks({});
+    await _deleteUnusedPhotos(); // Nothing refers to any photo any more.
+    return true;
+  });
+
+  /// This installation's newest rows on the backend, or null when it cannot
+  /// be reached.
+  Future<List<PredictionHistoryEntry>?> _fetchHistory() {
+    return _tryEachHost<List<PredictionHistoryEntry>>((baseUrl, client) async {
       final response = await client
           .get(Uri.parse('$baseUrl/history?limit=$_historyLimit'), headers: await _clientHeaders())
           .timeout(_quickTimeout);
@@ -155,51 +286,77 @@ class RiceApiService {
           .map(PredictionHistoryEntry.fromJson)
           .toList();
     });
+  }
 
-    if (remoteEntries == null) return _readLocalHistory();
-    final entries = [
-      ...remoteEntries,
-      ...await _readLocalHistory(key: _unsavedHistoryKey),
-    ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    await _writeLocalHistory(entries);
-    return entries.take(_historyLimit).toList();
-  });
-
-  /// Saves a client failure or a prediction left unsaved by a database outage.
-  /// Only call this when [PredictionResult.savedByBackend] is false.
-  Future<void> saveUnsavedPrediction(PredictionHistoryEntry entry) => _withHistoryLock(() async {
-    final saved = await _tryEachHost<bool>((baseUrl, client) async {
-      final response = await client
-          .post(
-            Uri.parse('$baseUrl/history'),
-            headers: {'Content-Type': 'application/json', ...await _clientHeaders()},
-            body: jsonEncode(entry.toJson()),
-          )
-          .timeout(_quickTimeout);
-      return response.statusCode == 200 ? true : null;
-    });
-
-    if (saved == null) {
-      final unsaved = [entry, ...await _readLocalHistory(key: _unsavedHistoryKey)];
-      await _writeLocalHistory(unsaved, key: _unsavedHistoryKey);
+  /// Copies a classified photo into the photo folder. Returns the copy's name,
+  /// or null when this device keeps no photos or the copy failed.
+  Future<String?> _savePhoto(Uint8List photo) async {
+    final folder = await photoFolder();
+    if (folder == null) return null;
+    // Named after the moment it was kept, so no two photos share a name.
+    final name = '${DateTime.now().microsecondsSinceEpoch}';
+    try {
+      await folder.create(recursive: true);
+      await photoFile(folder, name)!.writeAsBytes(photo, flush: true);
+      return name;
+    } catch (error) {
+      debugPrint('Could not keep the photo for History: $error');
+      return null;
     }
-    await _writeLocalHistory([entry, ...await _readLocalHistory()]);
-  });
+  }
 
-  /// Failed server deletion must preserve the local copies for a later retry.
-  Future<bool> clearHistory() => _withHistoryLock(() async {
-    final cleared = await _tryEachHost<bool>((baseUrl, client) async {
-      final response = await client
-          .delete(Uri.parse('$baseUrl/history'), headers: await _clientHeaders())
-          .timeout(_quickTimeout);
-      return response.statusCode == 200 ? true : null;
-    });
+  /// Ties [photoName] to the row /predict just saved for [result]. The reply
+  /// identifies its own row. Older servers need a unique grade/confidence
+  /// match; ambiguous matches cannot safely identify which photo belongs where.
+  Future<void> _linkPhoto(PredictionResult result, String photoName) async {
+    var rowId = result.historyId;
+    if (rowId == null) {
+      final links = await _readPhotoLinks();
+      final rows = await _fetchHistory();
+      final matches = rows?.where((row) =>
+          row.id != null && row.error == null && row.imagePath == null &&
+          !links.containsKey(row.id) &&
+          row.predictedGrade == result.predictedGrade &&
+          row.confidence == result.confidence).take(2).toList();
+      if (matches == null || matches.length != 1) return;
+      rowId = matches.single.id!;
+    }
+    await _storePhotoLink(rowId, photoName);
+  }
 
-    if (cleared != true) return false;
-    await _writeLocalHistory([]);
-    await _writeLocalHistory([], key: _unsavedHistoryKey);
-    return true;
-  });
+  Future<void> _storePhotoLink(int rowId, String photoName) async {
+    final links = await _readPhotoLinks();
+    links[rowId] = photoName;
+    // History lists at most _historyLimit rows, so older links are never shown.
+    final newestFirst = links.keys.toList()..sort((a, b) => b.compareTo(a));
+    await _writePhotoLinks({for (final id in newestFirst.take(_historyLimit)) id: links[id]!});
+  }
+
+  /// Deletes kept photos that no saved History record refers to any more: those
+  /// of cleared or aged-out rows, and any copy that could not be linked.
+  Future<void> _deleteUnusedPhotos() async {
+    final folder = await photoFolder();
+    if (folder == null) return;
+    try {
+      if (!await folder.exists()) return;
+      final records = [
+        ...await _readLocalHistory(),
+        ...await _readLocalHistory(key: _unsavedHistoryKey),
+      ];
+      final inUse = {
+        ...(await _readPhotoLinks()).values,
+        for (final record in records)
+          if (record.imagePath != null) record.imagePath!,
+      };
+      await for (final item in folder.list()) {
+        if (item is File && !inUse.contains(item.uri.pathSegments.last)) {
+          await item.delete();
+        }
+      }
+    } catch (error) {
+      debugPrint('Could not tidy the History photos: $error');
+    }
+  }
 
   /// Runs [sendRequest] against each address from [ApiConfig] until one of them
   /// gives an answer. Returns null when none of them work.
@@ -267,6 +424,34 @@ class RiceApiService {
       );
     } catch (error) {
       debugPrint('Could not save the offline history copy: $error');
+    }
+  }
+
+  /// Which backend rows have a photo on this device: row id -> photo name.
+  Future<Map<int, String>> _readPhotoLinks() async {
+    final links = <int, String>{};
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = jsonDecode(prefs.getString(_photoLinksKey) ?? '{}');
+      if (saved is Map) {
+        saved.forEach((id, name) {
+          final rowId = int.tryParse('$id');
+          if (rowId != null && name is String) links[rowId] = name;
+        });
+      }
+    } catch (_) {
+      // Unreadable links only cost thumbnails, never the History list itself.
+    }
+    return links;
+  }
+
+  /// Best effort, like [_writeLocalHistory]: a lost link only costs a thumbnail.
+  Future<void> _writePhotoLinks(Map<int, String> links) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_photoLinksKey, jsonEncode(links.map((id, name) => MapEntry('$id', name))));
+    } catch (error) {
+      debugPrint('Could not save the History photo links: $error');
     }
   }
 

@@ -168,7 +168,8 @@ At startup `app/main.py`:
 
 On `POST /predict` it saves the upload, builds the one official crop, takes the CNN's
 `argmax` as the grade and that class's softmax value as the confidence, stores the
-result in MySQL, and returns it with a `history_saved` flag. Temporary uploads are
+result in MySQL, and returns it with a `history_saved` flag and the saved record's
+`history_id` when persistence succeeds. Temporary uploads are
 deleted after every completed request. Nothing adjusts or overrides the CNN. It answers
 **503** with no usable model, **400** for an empty or unreadable upload, and **500**
 if inference itself fails; failed predictions write no history row. Oversized files
