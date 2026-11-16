@@ -8,8 +8,8 @@ class PredictionHistoryEntry {
   final double confidence;
   final DateTime createdAt;
 
-  /// The file name of this prediction's photo in the app's private History
-  /// folder (see RiceApiService.photoFile), or null when no photo was kept.
+  /// The name of this prediction's photo kept on this device (see
+  /// RiceApiService.historyPhotos), or null when no photo was kept.
   final String? imagePath;
   final String? note;
   final String? error;

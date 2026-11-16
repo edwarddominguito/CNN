@@ -16,11 +16,12 @@ backend/artifacts/model/metrics.json
 ```
 
 The primary model is about 11.6 MB in this checkout. `.gitignore` permits these
-deployment files while keeping training photographs, fold checkpoints, obsolete
-support embeddings, generated plots, local databases, and uploaded images out of
-Git. `.dockerignore` also excludes those files from the production image. Keep a
-separate backup of the original photographs and collection records: deployment
-weights cannot recreate the training dataset.
+deployment files. Active training photographs are tracked separately with Git LFS;
+fold checkpoints, obsolete support embeddings, generated plots, local backups,
+databases, and uploaded images remain outside Git. `.dockerignore` excludes all
+dataset photographs from the production image, and GitHub Actions does not
+download LFS objects. Keep a separate backup of the original photographs and
+collection records: deployment weights cannot recreate the training dataset.
 
 After committing, this command must succeed from the repository root:
 

@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' show Random;
+import 'dart:math' show Random, max, min;
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -16,8 +18,9 @@ import 'api_config.dart';
 ///
 /// If the backend cannot be reached, the history is kept in a small copy on
 /// the phone so the History screen still has something to show. The photo of
-/// each successful scan is kept the same way, in the app's private folder;
-/// the backend never keeps photos.
+/// each successful scan is kept on the device too: in the app's private
+/// folder, or on the web as a reduced copy in the browser's local storage. The
+/// backend never keeps photos.
 ///
 /// No method here throws. A screen that called one of these can always show
 /// its answer and stop its spinner, whatever went wrong underneath.
@@ -44,6 +47,13 @@ class RiceApiService {
   static const _unsavedHistoryKey = 'unsaved_prediction_history';
   // Backend row id -> name of its photo, for the rows /predict saves itself.
   static const _photoLinksKey = 'history_photo_links';
+  // Where there is no photo folder (the web), each photo's reduced copy is
+  // stored under this prefix plus the photo's name.
+  static const _storedPhotoPrefix = 'history_photos/';
+  // A browser gives a site only a few megabytes of local storage: about 5.2
+  // million characters in Chrome. Measured there, 25 copies of this project's
+  // largest rice photos at this size take 3.4 million.
+  static const _storedPhotoSize = 320;
   static const _clientIdKey = 'history_client_id';
   static const _historyLimit = 25;
   // Screens use separate service instances but share the same local store.
@@ -87,20 +97,46 @@ class RiceApiService {
   }
 
   /// The app's private folder for History photos. A browser gives a web app no
-  /// private files, so the web keeps none.
+  /// private files, so the web has none.
   static Future<Directory?> _appPhotoFolder() async {
     if (kIsWeb) return null;
     final support = await getApplicationSupportDirectory();
     return Directory('${support.path}/history_photos');
   }
 
-  /// Where this device keeps History photos, or null when it keeps none.
+  /// Where this device keeps History photos, or null when it has no folder for
+  /// them. Photos are then kept as reduced copies in local storage instead.
   Future<Directory?> photoFolder() async {
     try {
       return await _photoFolder();
     } catch (_) {
-      return null; // History still works, with placeholders instead of photos.
+      return null;
     }
+  }
+
+  /// The kept photos of [entries] by photo name, for the History screen. An
+  /// entry with no kept photo is left out and shows a placeholder.
+  Future<Map<String, ImageProvider>> historyPhotos(List<PredictionHistoryEntry> entries) async {
+    final photos = <String, ImageProvider>{};
+    try {
+      final folder = await photoFolder();
+      final prefs = await SharedPreferences.getInstance();
+      for (final entry in entries) {
+        final name = entry.imagePath;
+        if (name == null) continue;
+        if (folder != null) {
+          final file = photoFile(folder, name);
+          if (file != null) photos[name] = FileImage(file);
+        } else {
+          final copy = prefs.getString('$_storedPhotoPrefix$name');
+          if (copy != null) photos[name] = MemoryImage(base64Decode(copy));
+        }
+      }
+    } catch (error) {
+      // Photos are an extra: History still lists every row, with placeholders.
+      debugPrint('Could not read the History photos: $error');
+    }
+    return photos;
   }
 
   /// The History photo called [name] in [folder]. Only a plain file name is
@@ -288,20 +324,62 @@ class RiceApiService {
     });
   }
 
-  /// Copies a classified photo into the photo folder. Returns the copy's name,
-  /// or null when this device keeps no photos or the copy failed.
+  /// Keeps a private copy of a classified photo: the photo itself in the photo
+  /// folder, or a reduced copy in local storage where there is no folder.
+  /// Returns the copy's name, or null when nothing could be kept.
   Future<String?> _savePhoto(Uint8List photo) async {
-    final folder = await photoFolder();
-    if (folder == null) return null;
     // Named after the moment it was kept, so no two photos share a name.
     final name = '${DateTime.now().microsecondsSinceEpoch}';
     try {
+      final folder = await photoFolder();
+      if (folder == null) {
+        final copy = await _reducedCopy(photo);
+        if (copy == null) return null;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('$_storedPhotoPrefix$name', base64Encode(copy));
+        return name;
+      }
       await folder.create(recursive: true);
       await photoFile(folder, name)!.writeAsBytes(photo, flush: true);
       return name;
     } catch (error) {
+      // Includes a browser's storage being full: the scan is still in History,
+      // only without its photo.
       debugPrint('Could not keep the photo for History: $error');
       return null;
+    }
+  }
+
+  /// [photo] as a PNG at most [_storedPhotoSize] pixels on its longer side.
+  static Future<Uint8List?> _reducedCopy(Uint8List photo) async {
+    final codec = await ui.instantiateImageCodec(photo);
+    ui.Image? frame;
+    ui.Picture? picture;
+    ui.Image? copy;
+    try {
+      frame = (await codec.getNextFrame()).image;
+      final scale = min(1.0, _storedPhotoSize / max(frame.width, frame.height));
+      final width = max(1, (frame.width * scale).round());
+      final height = max(1, (frame.height * scale).round());
+      // Drawn with mipmaps, so each pixel of the copy averages the pixels it
+      // replaces. On the same rice photos the web engine's own resize left
+      // jagged grain edges and a PNG 1.7 times as large.
+      final recorder = ui.PictureRecorder();
+      ui.Canvas(recorder).drawImageRect(
+        frame,
+        ui.Rect.fromLTWH(0, 0, frame.width.toDouble(), frame.height.toDouble()),
+        ui.Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+        ui.Paint()..filterQuality = ui.FilterQuality.medium,
+      );
+      picture = recorder.endRecording();
+      copy = await picture.toImage(width, height);
+      final png = await copy.toByteData(format: ui.ImageByteFormat.png);
+      return png?.buffer.asUint8List();
+    } finally {
+      copy?.dispose();
+      picture?.dispose();
+      frame?.dispose();
+      codec.dispose();
     }
   }
 
@@ -335,10 +413,7 @@ class RiceApiService {
   /// Deletes kept photos that no saved History record refers to any more: those
   /// of cleared or aged-out rows, and any copy that could not be linked.
   Future<void> _deleteUnusedPhotos() async {
-    final folder = await photoFolder();
-    if (folder == null) return;
     try {
-      if (!await folder.exists()) return;
       final records = [
         ...await _readLocalHistory(),
         ...await _readLocalHistory(key: _unsavedHistoryKey),
@@ -348,6 +423,15 @@ class RiceApiService {
         for (final record in records)
           if (record.imagePath != null) record.imagePath!,
       };
+      final prefs = await SharedPreferences.getInstance();
+      for (final key in prefs.getKeys()) {
+        if (key.startsWith(_storedPhotoPrefix) &&
+            !inUse.contains(key.substring(_storedPhotoPrefix.length))) {
+          await prefs.remove(key);
+        }
+      }
+      final folder = await photoFolder();
+      if (folder == null || !await folder.exists()) return;
       await for (final item in folder.list()) {
         if (item is File && !inUse.contains(item.uri.pathSegments.last)) {
           await item.delete();

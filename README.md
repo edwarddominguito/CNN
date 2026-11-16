@@ -28,14 +28,18 @@ model inference. Device camera and gallery behavior still require device tests.
 ## Deployment
 
 Follow [Railway deployment instructions](docs/RAILWAY.md). The three tracked
-files in `backend/artifacts/model/` are required runtime assets. Local training
-photographs, databases, uploads, environment files, and build outputs are excluded
-from Git and the deployment image. Back up training photographs separately.
+files in `backend/artifacts/model/` are required runtime assets. The 700 active
+training photographs are tracked with Git LFS; install Git LFS before cloning,
+or run `git lfs pull` in an existing clone to download them. Datasets stay outside
+the deployment image. Local backups, databases, uploads, environment files, and
+build outputs remain excluded from Git. Keep an independent dataset backup.
 
 ## Evaluation
 
-The saved 23 October 2026 grouped five-fold evaluation reports 80.53% mean
-accuracy across 375 images. Fold accuracies range from 41.33% to 100%; physical
-sample independence and grade provenance remain unverified. The model has no
-rice-versus-non-rice detector. See the [evaluation record and model bundle
-hashes](docs/model-evaluation/2026-10-23.json) for the recorded evidence.
+The saved 16 November 2026 grouped five-fold evaluation reports 75.76% mean
+accuracy and 70.00% macro F1 across 700 images. Physical sample independence and
+grade provenance remain unverified, and the model has no rice-versus-non-rice
+detector. See the [current metrics](backend/artifacts/model/metrics.json) and
+[dataset inventory](backend/data/dataset/dataset_manifest.json). The
+[23 October evaluation record](docs/model-evaluation/2026-10-23.json) preserves
+the earlier 375-image results and bundle hashes.

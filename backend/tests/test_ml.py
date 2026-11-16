@@ -1,5 +1,6 @@
 """Dataset and training regressions that do not train or download a model."""
 
+import json
 import shutil
 import tempfile
 import unittest
@@ -205,7 +206,7 @@ class TrainingTests(unittest.TestCase):
             metrics_path.write_text('{"accuracy":36.2}', encoding="utf-8")
             args = SimpleNamespace(seed=42, dataset=directory, results_dir=directory / "results",
                                    output_model=directory / "model.keras", check_only=False,
-                                   batch_size=1, epochs=1)
+                                   batch_size=1, epochs=1, fine_tune=False)
             scanned = SimpleNamespace(class_names=images.CLASS_NAMES)
             fold = {"confusion_matrix": np.eye(3).tolist(), "accuracy": 0.5,
                     "f1_score": 0.5, "best_epoch": 1}
@@ -222,6 +223,67 @@ class TrainingTests(unittest.TestCase):
                     run(args)
                 save_metrics.assert_not_called()
             self.assertEqual(metrics_path.read_text(encoding="utf-8"), '{"accuracy":36.2}')
+
+    def test_fine_tune_experiment_never_writes_the_deployment_model(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            args = SimpleNamespace(seed=42, dataset=directory, results_dir=directory / "results",
+                                   output_model=directory / "model.keras", check_only=False,
+                                   batch_size=1, epochs=1, fine_tune=True)
+            scanned = SimpleNamespace(class_names=images.CLASS_NAMES)
+            fold = {"fold": 1, "confusion_matrix": np.eye(3).tolist(), "accuracy": 0.5,
+                    "precision": 0.5, "recall": 0.5, "f1_score": 0.5, "best_epoch": 1}
+            with patch("ml.train_5fold.scan_dataset", return_value=scanned), \
+                 patch("ml.train_5fold.describe_dataset"), \
+                 patch("ml.train_5fold.check_ready_for_training"), \
+                 patch("ml.train_5fold.build_folds", return_value=[None] * 5), \
+                 patch("ml.train_5fold.run_one_fold",
+                       return_value={"fold": 1, "baseline": fold, "fine_tuned": fold}) as run_fold, \
+                 patch.object(evaluate_model, "save_confusion_matrix"), \
+                 patch.object(evaluate_model, "save_dashboard_metrics") as save_metrics, \
+                 patch.object(train_model, "train_deployment_model") as train_final:
+                run(args)
+            train_final.assert_not_called()
+            save_metrics.assert_not_called()
+            # Even the per-fold checkpoints stay out of artifacts/model.
+            self.assertEqual(run_fold.call_args.args[4], args.results_dir)
+            for name in ("baseline", "fine_tuned"):
+                saved = json.loads((args.results_dir / name / "cross_validation.json").read_text())
+                self.assertEqual(len(saved), 5)
+            self.assertIn("fine-tuned", (args.results_dir / "comparison.txt").read_text())
+            self.assertFalse(args.output_model.exists())
+
+    def test_fine_tuning_unfreezes_only_the_top_block_at_a_tenth_of_the_rate(self):
+        original = tf.keras.applications.MobileNetV2
+
+        def untrained_backbone(**options):
+            # Random weights: the layer structure is what matters, and nothing downloads.
+            return original(**{**options, "weights": None})
+
+        with patch.object(tf.keras.applications, "MobileNetV2", side_effect=untrained_backbone):
+            model = train_model.build_model(3)
+        backbone = train_model.find_backbone(model)
+        self.assertEqual(len(backbone.layers), 154)
+        self.assertEqual(train_model.count_trainable_parameters(model), 164_355)
+
+        unfrozen = train_model.unfreeze_top_of_backbone(model)
+
+        self.assertEqual(unfrozen, ["block_16_expand", "block_16_depthwise",
+                                    "block_16_project", "Conv_1"])
+        self.assertFalse(any(layer.trainable for layer in backbone.layers[:143]))
+        self.assertFalse(any(layer.trainable for layer in backbone.layers
+                             if isinstance(layer, tf.keras.layers.BatchNormalization)))
+        self.assertEqual(train_model.count_trainable_parameters(model), 1_043_395)
+        self.assertAlmostEqual(float(model.optimizer.learning_rate.numpy()),
+                               train_model.HEAD_LEARNING_RATE / 10)
+
+        # Training mode must not reach the backbone: its BatchNormalization layers stay
+        # in inference mode, so their moving mean and variance do not move.
+        frozen = [weight.numpy() for weight in backbone.non_trainable_weights]
+        images_in = np.random.default_rng(0).uniform(0, 255, (2, 224, 224, 3)).astype("float32")
+        model(images_in, training=True)
+        for before, weight in zip(frozen, backbone.non_trainable_weights):
+            np.testing.assert_array_equal(before, weight.numpy())
 
     def test_check_only_validates_actual_folds(self):
         args = SimpleNamespace(seed=42, dataset=Path("dataset"), results_dir=Path("results"),

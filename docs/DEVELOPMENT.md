@@ -9,7 +9,7 @@ the React app and Python API together; MySQL runs as a separate service.
 backend/
   app/          FastAPI server, MySQL history access, shared paths
   ml/           dataset scanning, CNN, group-aware 5-fold evaluation
-  data/dataset/ local training photographs, grouped by grade and source batch
+  data/dataset/ Git LFS training photographs, grouped by grade and source batch
   storage/      temporary uploads; old local SQLite file is not the current DB
   artifacts/    model bundle and local training results
   scripts/      development launchers, production entry point, deployment smoke
@@ -27,8 +27,10 @@ when processing completes, including failed requests.
 
 ## Dataset and saved model
 
-The 2026-10-23 local audit found 375 readable JPG photographs in 15 non-empty batch
-folders: 125 per grade, with five batches of 25 images in each grade.
+The 2026-11-17 local audit found 700 readable JPG photographs in 28 non-empty batch
+folders: 250 each for Premium and Well-Milled, and 200 for Poor-Quality-Rice-Mix.
+Every batch contains 25 images. Install Git LFS before cloning or run
+`git lfs install` and `git lfs pull` to download photographs in an existing checkout.
 The scanner checks image integrity and duplicate content; the collection
 record still needs source/vendor, collection, and grade-verification evidence to
 establish that the batches represent independent physical samples.
@@ -42,11 +44,11 @@ backend/artifacts/model/metrics.json
 ```
 
 A compatible three-class model exists in this checkout. Its saved group-aware
-5-fold evaluation reports **80.53% accuracy**, **83.48% macro precision**,
-**80.53% macro recall**, and **78.02% macro F1**, across 375 images (generated
-2026-10-23). Accuracy varies from 41.33% to 100% across folds, with a 22.80
-percentage-point sample standard deviation. [Detailed fold results and bundle
-hashes](model-evaluation/2026-10-23.json) are preserved with the source.
+5-fold evaluation reports **75.76% accuracy**, **72.75% macro precision**,
+**74.13% macro recall**, and **70.00% macro F1**, across 700 images (generated
+2026-11-16), with an 11.45 percentage-point accuracy standard deviation. The
+[23 October fold results and bundle hashes](model-evaluation/2026-10-23.json)
+preserve the earlier 375-image evaluation.
 Verify sample independence and grade labels and improve evaluation before relying
 on the grades; serving checks do not establish grading reliability.
 
@@ -56,8 +58,9 @@ expressed as a percentage. Training evaluation and serving use the same
 rice/non-rice detector: an unrelated photograph can still receive a rice grade.
 
 The deployment image contains the saved model, labels, and evaluation metrics.
-Raw photographs, fold checkpoints, and generated plots remain local and must be
-backed up separately. Do not delete the deployable model bundle unless you intend
+Dataset photographs are stored with Git LFS and excluded from the image. Fold
+checkpoints and generated plots remain local. Keep separate backups, and do not
+delete the deployable model bundle unless you intend
 to retrain or restore it.
 
 ## Python setup and commands

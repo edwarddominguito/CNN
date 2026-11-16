@@ -32,9 +32,13 @@ empty server history. The app keeps an offline copy of downloaded history. Histo
 serialized across screens so concurrent saves and refreshes cannot overwrite
 each other. A failed server deletion keeps both local history copies and shows
 a retry message. Animated images are rejected before preview.
-History shows the photo each successful prediction was made from. The photo is
-copied into the app's private folder on the device, never kept on the server,
-and deleted when History is cleared; web builds show a placeholder instead.
+History shows the photo each successful prediction was made from. Tapping a row
+opens Scan Details: the photo, the result card shown after the scan, and the
+Guide's description of the grade. Tapping a thumbnail, or the photo on Scan
+Details, opens the photo full screen to zoom in on the grains. The photo is
+kept privately on the device (in the app's private folder; in a browser, as a
+reduced copy in local storage), never on the server, and deleted when History
+is cleared.
 
 The Android project currently uses the debug signing key for release builds.
 Configure your own signing key before publishing through an app store.

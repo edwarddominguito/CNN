@@ -35,6 +35,13 @@ data/dataset/**/*
 # Dataset documentation, not dataset images: keep it in version control.
 !data/dataset/collection_record.csv
 !data/dataset/dataset_manifest.json
+# Active training photographs are stored in Git LFS, outside the runtime image.
+!data/dataset/**/*.[jJ][pP][gG]
+!data/dataset/**/*.[jJ][pP][eE][gG]
+!data/dataset/**/*.[pP][nN][gG]
+!data/dataset/**/*.[wW][eE][bB][pP]
+!data/dataset/**/*.[hH][eE][iI][cC]
+!data/dataset/**/*.[hH][eE][iI][fF]
 
 # Local dataset backups and manifest exports.
 dataset_backups/

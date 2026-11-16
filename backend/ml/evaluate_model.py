@@ -121,6 +121,32 @@ def summarize_folds(fold_results: list, planned_folds: int) -> str:
     return "\n".join(lines) + "\n"
 
 
+def summarize_comparison(baseline: list, fine_tuned: list) -> str:
+    """The frozen-backbone baseline beside the fine-tuned model, fold by fold.
+
+    Both lists come from the same folds, so each pair of numbers was measured on the
+    same untouched evaluation batches.
+    """
+    lines = [
+        "Fine-tuning experiment: the same grouped folds, scored after each phase",
+        "",
+        f"{'':10s}  {'baseline':>17s}  {'fine-tuned':>17s}",
+    ]
+    for key in HEADLINE_METRICS:
+        before = "{:.4f} +/- {:.4f}".format(*mean_and_deviation(baseline, key))
+        after = "{:.4f} +/- {:.4f}".format(*mean_and_deviation(fine_tuned, key))
+        label = key.replace("_", " ").title()
+        lines.append(f"{label:10s}  {before:>17s}  {after:>17s}")
+    lines.append("")
+    for before, after in zip(baseline, fine_tuned):
+        lines.append(
+            f"Fold {before['fold']}: accuracy {before['accuracy']:.4f} -> "
+            f"{after['accuracy']:.4f}, macro F1 {before['f1_score']:.4f} -> "
+            f"{after['f1_score']:.4f}"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def write_json(path: Path, payload) -> None:
     content = json.dumps(payload, indent=2, allow_nan=False)
     save_atomically(path, lambda pending: pending.write_text(content, encoding="utf-8"))

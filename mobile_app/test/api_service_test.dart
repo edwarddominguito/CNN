@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -40,6 +42,19 @@ void main() {
     final folder = await Directory.systemTemp.createTemp('history_photos_test');
     addTearDown(() => folder.delete(recursive: true));
     return folder;
+  }
+
+  // A real PNG of the given size, like a camera photo the web has to reduce.
+  Future<Uint8List> pngOfSize(int width, int height) async {
+    final recorder = ui.PictureRecorder();
+    ui.Canvas(recorder).drawRect(
+      ui.Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+      ui.Paint()..color = const ui.Color(0xFFD7CCC8),
+    );
+    final image = await recorder.endRecording().toImage(width, height);
+    final png = await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
+    return png!.buffer.asUint8List();
   }
 
   // Answers like the backend: /predict saves a row without a photo, taking
@@ -421,6 +436,25 @@ void main() {
       expect(await folder.list().toList(), hasLength(1));
       expect(await api.clearHistory(), isTrue);
       expect(await folder.list().toList(), isEmpty);
+    });
+
+    test('without a photo folder (the web) a reduced copy is kept, then cleared', () async {
+      final photo = await pngOfSize(1200, 600);
+      final backend = fakeBackend([], [('Premium', 98.7)]);
+      final api = RiceApiService(
+        baseUrls: hosts, clientFactory: () => backend, photoFolder: () async => null,
+      );
+      await api.addToHistory(await api.predictRiceGrade('rice.png', photo), photo);
+
+      final entry = (await api.getHistory()).single;
+      final kept = (await api.historyPhotos([entry]))[entry.imagePath]! as MemoryImage;
+      final copy = (await (await ui.instantiateImageCodec(kept.bytes)).getNextFrame()).image;
+      expect((copy.width, copy.height), (320, 160)); // the longer side reduced to 320
+      copy.dispose();
+
+      expect(await api.clearHistory(), isTrue);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getKeys().where((key) => key.startsWith('history_photos/')), isEmpty);
     });
 
     test('photos of rows that drop out of History are deleted', () async {

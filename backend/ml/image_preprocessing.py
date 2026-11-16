@@ -9,6 +9,7 @@ describe a model the API never actually runs.
 """
 
 import hashlib
+import os
 from pathlib import Path
 from typing import NamedTuple
 
@@ -25,7 +26,8 @@ CLASS_NAMES = [
 ]
 
 IMAGE_SIZE = (224, 224)
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+HEIF_EXTENSIONS = {".heic", ".heif"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"} | HEIF_EXTENSIONS
 # Decode only one full phone photo at a time. AUTOTUNE can hold many 12-25 MP
 # originals in memory, which is unsafe on a small training/deployment machine.
 DATA_PIPELINE_PARALLELISM = 1
@@ -54,6 +56,30 @@ class DatasetError(ValueError):
     """The dataset cannot be split into leakage-free folds."""
 
 
+class ImageDecoderUnavailable(ValueError):
+    """An optional dataset image decoder needs installation or repair."""
+
+
+def enable_heif_support() -> None:
+    """Load the training-only codec when a HEIC/HEIF file is actually read.
+
+    Production JPEG/PNG/WebP inference does not need pillow-heif installed.
+    Decode only the main still image with one native worker, keeping the same
+    bounded image pipeline used for the other dataset formats.
+    """
+    try:
+        from pillow_heif import register_heif_opener
+
+        register_heif_opener(
+            decode_threads=1, thumbnails=False, depth_images=False, aux_images=False
+        )
+    except (ImportError, OSError, RuntimeError) as error:
+        raise ImageDecoderUnavailable(
+            "HEIC/HEIF support unavailable; install the training requirements with "
+            "your backend Python: python -m pip install -r requirements-training.txt"
+        ) from error
+
+
 class ScannedDataset(NamedTuple):
     """Every usable image, plus the batch group that keeps the folds honest."""
 
@@ -78,17 +104,31 @@ class ScannedDataset(NamedTuple):
 
 def load_rgb_image(image_path):
     """Fully decode one bounded, orientation-corrected RGB still image."""
+    # tf.numpy_function supplies UTF-8 byte filenames. Decode before both Path()
+    # and Image.open(), including non-ASCII Windows dataset folder names.
+    image_path = os.fsdecode(image_path)
+    heif = Path(image_path).suffix.lower() in HEIF_EXTENSIONS
+    if heif:
+        enable_heif_support()
     with Image.open(image_path) as source:
         if source.width * source.height > MAX_IMAGE_PIXELS:
             raise ValueError(
                 f"Image dimensions exceed the {MAX_IMAGE_PIXELS:,} pixel limit."
             )
-        if source.format not in {"JPEG", "PNG", "WEBP"}:
-            raise ValueError("Only JPEG, PNG and WebP images are supported.")
+        supported_formats = {"JPEG", "PNG", "WEBP"}
+        if heif:
+            supported_formats.update({"HEIF", "HEIC"})
+        if source.format not in supported_formats:
+            raise ValueError("Use JPEG, PNG, WebP or a HEIC/HEIF dataset image.")
         if getattr(source, "n_frames", 1) != 1:
             raise ValueError("Animated or multiple-frame images are not supported.")
         # load() catches truncated JPEG files that Pillow's verify() can accept.
         source.load()
+        # Native HEIF decoders can update the dimensions while decoding.
+        if source.width * source.height > MAX_IMAGE_PIXELS:
+            raise ValueError(
+                f"Image dimensions exceed the {MAX_IMAGE_PIXELS:,} pixel limit."
+            )
         with ImageOps.exif_transpose(source) as oriented:
             return oriented.convert("RGB")
 
@@ -148,7 +188,10 @@ def scan_batches(class_dir: Path, fingerprints=None) -> tuple:
                     if previous != path:
                         problems.append((f"duplicate image pixels (same as {previous})", path))
                     images.append(path)
-                except (OSError, ValueError, Image.DecompressionBombError):
+                except ImageDecoderUnavailable as error:
+                    problems.append((str(error), path))
+                except (OSError, ValueError, SyntaxError, EOFError, RuntimeError,
+                        Image.DecompressionBombError):
                     problems.append(("corrupt or unreadable image", path))
         batches[batch_dir.name] = images
     return batches, problems
@@ -321,7 +364,8 @@ def check_ready_for_training(scanned: ScannedDataset, folds: int) -> None:
 
     integrity = [
         (reason, path) for reason, path in scanned.problems
-        if reason.startswith(("duplicate image pixels", "unrecognized grade folder"))
+        if reason.startswith(("duplicate image pixels", "unrecognized grade folder",
+                              "HEIC/HEIF support unavailable"))
     ]
     if integrity:
         listed = "\n".join(f"  {reason}: {path}" for reason, path in integrity)

@@ -24,10 +24,30 @@ Two supporting files are not part of training but depend on it:
 ```
 backend/data/dataset/
   Premium/               Well-Milled/           Poor-Quality-Rice-Mix/
-    batch_01/ .. batch_05/   batch_01/ .. batch_05/   batch_01/ .. batch_05/
+    batch_01/ .. batch_10/   batch_01/ .. batch_10/   batch_01/ .. batch_08/
 ```
 
-Only `.jpg`, `.jpeg`, and `.png` files are read. `README.md` and any other file is ignored.
+The active dataset has 700 JPEGs in 28 batches of 25: ten batches each for Premium
+and Well-Milled, and eight for Poor-Quality-Rice-Mix. Active photographs are tracked
+with Git LFS; run `git lfs pull` before training in a checkout without the images.
+The 75 earlier additions in the three `batch_06` folders were converted from HEIC
+to full-resolution RGB JPEG at quality 95 without chroma subsampling. Their exact
+originals and conversion manifest remain under `backend/dataset_backups/<run>/`,
+outside the active input and excluded from Git.
+
+Prefer JPEG for new collections and use `scripts.convert_dataset_heic` below to
+convert HEIC/HEIF without keeping both versions active. Dataset loading also
+accepts `.jpg`, `.jpeg`, `.png`, `.webp`, `.heic`, and `.heif`, with
+case-insensitive extensions. Native HEIC/HEIF decoding remains a fallback through
+the training-only `pillow-heif` dependency; install `requirements-training.txt`
+before conversion or the pre-flight. A missing codec blocks training with
+installation instructions. Unreadable images and unsupported files inside batches
+are reported and skipped. JPEG/PNG/WebP API inference does not require HEIF support.
+
+The saved 16 November five-fold evaluation reports 75.76% mean accuracy and 70.00%
+macro F1 on 700 images. Conversion and dataset publication do not retrain or
+re-evaluate the saved model. The current dataset manifest lists the 700 published
+images; the 23 October evaluation record preserves the earlier 375-image results.
 
 **One batch folder = one physical rice sample.** Every photo of that sample goes in
 that one folder, even if you changed the angle or the lighting. Never copy a photo
@@ -127,11 +147,54 @@ fold results remain available under the results directory.
 Run from the `backend` folder, as a module so the `ml` package resolves:
 
 ```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-training.txt
+.\.venv\Scripts\python.exe -m scripts.convert_dataset_heic
+.\.venv\Scripts\python.exe -m scripts.convert_dataset_heic --apply
+.\.venv\Scripts\python.exe -m ml.train_5fold --check-only
 .\.venv\Scripts\python.exe -m ml.train_5fold --epochs 30 --batch-size 32
 ```
 
+The converter prints a read-only plan by default. `--apply` validates each JPEG,
+archives the exact HEIC/HEIF source outside the dataset, and writes a conversion
+manifest under `backend/dataset_backups/<run>/`. It preserves every image and
+batch count; conversion does not trim a batch or start training. Keep only one
+active version of each photograph: lossy HEIC-to-JPEG conversion cannot be
+reliably detected by exact-pixel duplicate checks.
+
 Options: `--dataset`, `--epochs`, `--batch-size`, `--seed`, `--output-model`,
-`--results-dir`.
+`--results-dir`, `--check-only`, `--fine-tune`.
+
+### Fine-tuning experiment
+
+```powershell
+.\.venv\Scripts\python.exe -m ml.train_5fold --epochs 30 --fine-tune
+```
+
+This measures TensorFlow's transfer-learning recipe on the same grouped folds. Each
+fold first trains exactly as above and is scored: that is the **baseline** (Phase 1,
+frozen MobileNetV2, classifier head only, Adam at 0.001). The same model then
+continues into **Phase 2**:
+
+- `train_model.unfreeze_top_of_backbone()` unfreezes the last inverted-residual block
+  (`block_16_*`) and the final `Conv_1`. That is 11 of the 154 backbone layers, whose
+  4 convolutions train.
+- The model is recompiled at a tenth of the learning rate (0.0001).
+- It trains for up to 10 more epochs with the same callbacks, early-stopping on the
+  inner validation split only.
+- It is scored again on the same untouched evaluation batches.
+
+BatchNormalization stays frozen. In Keras 3, `model.fit` passes `training=True` down to
+nested layers, overriding `training=False` on the backbone call. A trainable
+BatchNormalization layer would therefore update its moving statistics on these small
+batches. A frozen one always runs in inference mode. Each fold confirms that no frozen
+weight or statistic moved (`frozen_weights_unchanged`).
+
+The experiment never writes `artifacts/model/` (the model, the class order or the
+metrics). Its results go to `artifacts/results/5fold_fine_tune/`:
+- `baseline/` and `fine_tuned/`, holding the same files as a normal run plus per-epoch
+  training and validation curves;
+- the per-fold checkpoints;
+- `comparison.txt`.
 
 Use the Python inside `.venv`. The system `pip` points at a different Python version.
 
@@ -150,6 +213,7 @@ All under `backend/`, and all regenerable — see `app/paths.py`.
 | `artifacts/results/5fold/summary.txt` | Mean ± standard deviation |
 | `artifacts/results/5fold/confusion_fold_N.png` | Per-fold confusion matrix |
 | `artifacts/results/5fold/confusion_overall.png` | All five folds combined |
+| `artifacts/results/5fold_fine_tune/` | `--fine-tune` experiment: baseline and fine-tuned results side by side |
 
 Files are written through a `.pending` file and then renamed, so an interrupted run
 cannot leave the API reading half a file.

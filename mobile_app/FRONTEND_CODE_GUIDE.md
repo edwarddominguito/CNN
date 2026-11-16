@@ -69,8 +69,18 @@ finished, or waiting for the user — decided by `_buildActions()`.
 Loads past predictions in `initState()`, keeps them in a `List`, and shows one
 row per prediction. Has Refresh and Clear buttons in the title bar. A successful
 row shows the photo it was classified from as a small thumbnail, or a
-placeholder when this device has no copy; tapping a row with a photo opens it
-larger on its own page.
+placeholder when this device has no copy. Tapping a successful row opens Scan
+Details: the whole photo in a 4:3 frame, the same `PredictionResultCard` the
+Scan screen showed, and the grade's Guide text (`gradeTopic`). They sit side by
+side in a wide window and stack on a phone. Tapping a thumbnail, or the photo on
+Scan Details, opens that photo full screen on a dark page (`_PhotoViewer`, built
+on Flutter's `InteractiveViewer`): pinch or double-tap to zoom in, drag to move,
+Fit to screen or another double-tap to see the whole photo again. Only this page
+decodes the photo at full size, up to 4096 px on its longer side, and it
+releases it when closed. On the web it shows the 320 px copy, the only one kept
+there. The photo is shown at most at its own size: never
+stretched, cropped, filtered or enlarged except by zooming. A missing or
+unreadable file shows "Photo unavailable".
 
 ### guide_screen.dart (StatelessWidget)
 The Guide tab: a short, grouped list of learning topics (rice grades, quality
@@ -115,6 +125,7 @@ All backend communication, in one class:
 | `predictRiceGrade(fileName, bytes)` | uploads a photo, returns the grade | `POST /predict` |
 | `getHistory()` | past predictions | `GET /history` |
 | `addToHistory(result, photo)` | files a finished scan: keeps the photo of a successful one, records an answer the backend did not save | `GET /history`, `POST /history` |
+| `historyPhotos(entries)` | the kept photos of the listed rows, for the History screen | none (device only) |
 | `clearHistory()` | returns true after confirmed deletion; otherwise keeps local history | `DELETE /history` |
 
 Inside, one small private helper is reused by all of them:
@@ -136,12 +147,17 @@ Those unsaved entries remain local when the server history is refreshed.
 
 History photos never leave the device. After a successful prediction the
 classified bytes are copied into the app's private folder (`history_photos/`
-in `path_provider`'s application support directory); the web has no such
-folder and shows placeholders. A row the backend saved is tied to its photo by
-row id: right after `/predict`, the newest of this installation's rows with the
-same grade and confidence that has no photo yet. Unsaved entries carry the
-photo's file name themselves. Photos no saved record refers to (a cleared
-History, rows past the 25 listed, a copy that could not be linked) are deleted.
+in `path_provider`'s application support directory). A browser gives a web app
+no such folder, so the web keeps a reduced copy instead: a PNG at most 320 px on
+its longer side, stored base64 in local storage as `history_photos/<name>`.
+Measured in Chrome, 25 copies of the project's largest photos take 3.4 million
+of the roughly 5.2 million characters a site may store. A row the backend saved
+is tied to its photo by row id: the `history_id` that `/predict` returns or, from
+an older server without it, the single row of this installation's History with
+the same grade and confidence and no photo yet (if two match, neither is linked).
+Unsaved entries carry the photo's name themselves. Photos no saved record refers
+to (a cleared History, rows past the 25 listed, a copy that could not be linked)
+are deleted.
 History operations share a lock across service instances so concurrent screens
 cannot lose saves or restore an old refresh after a confirmed clear. Cache
 writes happen outside timed network callbacks. Unsaved prediction results are
@@ -180,8 +196,8 @@ The helper `toDoubleOrNull()` exists because the backend may send a number
 ### models/prediction_history_entry.dart
 One row of the History screen. It has `fromJson()` to read a saved row and
 `toJson()` to write one. `id` is the backend's row id (null for an entry only
-the phone holds) and `imagePath` is the file name of the row's photo in the
-app's private folder.
+the phone holds) and `imagePath` is the name of the row's photo kept on this
+device.
 
 ---
 

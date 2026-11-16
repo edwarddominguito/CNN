@@ -1,8 +1,46 @@
 # Grouped Rice Dataset
 
+## Verified local inventory, 2026-11-17
+
+The active dataset contains **700 readable JPEG photos in 28 batch folders**:
+Premium and Well-Milled each contain 250 photos in ten batches; Poor-Quality-Rice-Mix
+contains 200 photos in eight batches. Every batch contains 25 photos. The current
+`dataset_manifest.json` lists the files, byte sizes, SHA-256 hashes and integrity
+audit. Collection provenance and physical sample independence remain unverified.
+
+The saved model metrics generated on 16 November report **75.76% mean accuracy
+and 70.00% macro F1** across 700 images using grouped five-fold evaluation. This
+publication does not retrain the model. The inventories below describe historical
+snapshots; the current manifest describes the 700-image publication.
+
+The active photographs are versioned with Git LFS. Install Git LFS before cloning,
+or run `git lfs install` followed by `git lfs pull` in an existing checkout. CI and
+Railway inference use the saved model and do not need to download the photographs.
+
+## Verified local inventory, 2026-11-08
+
+The active dataset contains **450 readable JPEG photos in 18 batch folders**:
+150 photos per grade, with six batches of 25 each. The 75 new HEIC photos in the
+three `batch_06` folders were converted to full-resolution RGB JPEGs at quality
+95 with chroma subsampling disabled. Orientation and available ICC profiles were
+preserved. The previous 375 JPEGs were left unchanged. Every image is single-frame
+and below the 25-million-pixel limit.
+
+The exact 75 HEIC originals are archived outside the active dataset at
+`backend/dataset_backups/<run>/originals/<grade>/batch_06/`, with a conversion
+manifest in the same run folder. Only the JPEG versions remain in the active
+batches, so the original and converted image cannot both enter training.
+
+The latest saved grouped five-fold evaluation reports **78.20% mean accuracy**
+on 450 images, using the pre-conversion dataset of 375 JPEGs and 75 HEICs. JPEG
+conversion itself does not retrain or re-evaluate that model. The historical
+`dataset_manifest.json` and the 23 October evaluation below remain snapshots of
+375 images. Folder names alone do not verify physical sample independence or
+grade provenance.
+
 ## Verified local inventory, 2026-10-23
 
-The local dataset has **375 JPEG photos in 15 populated batch folders**:
+The 23 October snapshot had **375 JPEG photos in 15 populated batch folders**:
 
 - Premium: 125 photos; five batches of 25 photos each.
 - Well-Milled: 125 photos; five batches of 25 photos each.
@@ -24,7 +62,7 @@ still need the collector's evidence; no missing metadata has been invented.
 `dataset_manifest.json` records filenames, byte sizes and SHA-256 hashes without
 including the photographs themselves.
 
-The current saved model's grouped five-fold results report **80.53% mean accuracy
+The saved 23 October model's grouped five-fold results report **80.53% mean accuracy
 and 78.02% macro F1** on these 375 images. Fold accuracies range from 41.33% to
 100%, so performance varies substantially across held-out batches. The
 [preserved evaluation record](../../../docs/model-evaluation/2026-10-23.json)
@@ -60,10 +98,11 @@ backend/data/dataset/
     batch_03/
     batch_04/
     batch_05/
+    batch_06/
   Well-Milled/
-    batch_01/ ... batch_05/
+    batch_01/ ... batch_06/
   Poor-Quality-Rice-Mix/
-    batch_01/ ... batch_05/
+    batch_01/ ... batch_06/
 ```
 
 Every photo of one sample stays in that sample's folder, however much the angle or
@@ -114,11 +153,16 @@ anywhere in the model.
 - Grains clearly visible and in focus; avoid heavy overlap and blur.
 - Mostly top-down.
 - Never generate synthetic images to reach a count.
-- Only single-frame `.jpg`, `.jpeg` and `.png` images up to 25 million pixels are
-  read. EXIF phone orientation is applied consistently in training and prediction.
-  Convert phone HEIC photos to JPG first
-  (`scripts/convert_heic_dataset.py` can do it) and keep only the JPG in the batch
-  folder: a HEIC left beside its JPG is the same photo twice.
+- Prefer JPEG for the active dataset. Convert new phone HEIC/HEIF photos using
+  `scripts.convert_dataset_heic` as shown below; the command archives originals
+  outside the dataset and leaves one active JPEG per photograph.
+- Single-frame `.jpg`, `.jpeg`, `.png`, `.webp`, `.heic` and `.heif` dataset images
+  up to 25 million pixels are read, including uppercase extensions. EXIF phone
+  orientation is applied consistently in training and prediction. Native HEIC/HEIF
+  decoding remains a fallback through the training requirements; a missing decoder
+  is reported and blocks training with installation instructions. Do not manually
+  leave a HEIC beside its converted JPG: lossy conversion means exact-pixel
+  duplicate checks cannot reliably identify that pair as the same photograph.
 
 Unreadable images are fully decoded during scanning so a truncated JPEG cannot
 crash a later TensorFlow step. Exact RGB pixel duplicates, unknown grade folders
@@ -141,7 +185,7 @@ Premium
 
 It also lists the totals, the number of usable groups, the 25–30 collection target,
 and every file it could not use, each by full path: corrupt images, unsupported file
-types (such as HEIC), and images sitting outside any batch folder.
+types, missing optional decoders, and images sitting outside any batch folder.
 
 A grade with no images is reported as not yet collected, and training refuses to run
 until it has some. It stays a research class and is shown in the apps as a reserved
@@ -181,17 +225,25 @@ From `backend`, using Python 3.12 and the training requirements:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-training.txt
+.\.venv\Scripts\python.exe -m scripts.convert_dataset_heic
+.\.venv\Scripts\python.exe -m scripts.convert_dataset_heic --apply
 .\.venv\Scripts\python.exe -m ml.train_5fold --check-only
 .\.venv\Scripts\python.exe -m ml.train_5fold --epochs 30 --batch-size 32
 ```
+
+The conversion command without `--apply` prints a read-only plan. `--apply`
+creates and validates the JPEGs, archives the exact HEIC/HEIF originals outside
+the active dataset, and records the operation in a conversion manifest. It does
+not trim batch counts, overwrite the previous JPEGs, or train the model.
 
 The system `pip` points to Python 3.14 on this computer, so use the Python inside
 `.venv` for all backend package and training commands.
 
 ## Railway deployment
 
-The photos total approximately **0.70 GiB** and are intentionally excluded from
-Git and the deployment image. Railway inference uses the saved model and needs
+The active photographs are stored in Git LFS; archived originals and local backups
+remain excluded from Git. All dataset images stay outside the deployment image.
+Railway inference uses the saved model and needs
 no dataset or retraining at startup. The required runtime files under
 `backend/artifacts/model/` are included by the repository ignore rules:
 
@@ -201,5 +253,6 @@ no dataset or retraining at startup. The required runtime files under
 
 Fold checkpoints, support embeddings and training reports remain local research
 outputs. Keep a separate backup of the source photos and preserve their batch
-structure when transferring them to a training machine. A Git clone contains the
-dataset documentation and manifest, not the original photographs.
+structure when transferring them to a training machine. A clone with Git LFS
+installed downloads the active photographs. A checkout without LFS contains only
+pointer files; run `git lfs pull` before scanning or training that checkout.

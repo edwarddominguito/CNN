@@ -1,4 +1,4 @@
-"""The CNN itself: architecture, augmentation, callbacks, and the final model.
+"""The CNN itself: architecture, augmentation, callbacks, fine-tuning, and the final model.
 
 Import this from train_5fold.py. Running it directly does nothing useful, because a
 single train/validation split cannot measure this dataset honestly - there are only
@@ -22,6 +22,22 @@ EMBEDDING_LAYER_NAME = "rice_embedding"
 
 EARLY_STOPPING_PATIENCE = 5
 REDUCE_LR_PATIENCE = 2
+
+# Phase 1 trains only the new classifier head on the frozen backbone. 0.001 is Adam's
+# own default, which this model has always trained with; it is written out so the
+# fine-tuning rate below is visibly derived from it.
+HEAD_LEARNING_RATE = 1e-3
+
+# Optional Phase 2 (train_5fold.py --fine-tune), following TensorFlow's transfer
+# learning tutorial: once the head has trained, unfreeze only the top of MobileNetV2
+# and keep training at a learning rate ten times lower, the tutorial's own ratio.
+# block_16 is the last inverted-residual block. From its first layer to the end of
+# the backbone are 11 of the 154 layers: block_16 and the final 1x1 Conv_1, the
+# smallest complete unit at the top that includes a spatial (depthwise) filter. Their
+# four convolutions train; their BatchNormalization layers stay frozen (see below).
+FINE_TUNE_FROM_LAYER = "block_16_expand"
+FINE_TUNE_LEARNING_RATE = HEAD_LEARNING_RATE / 10
+FINE_TUNE_EPOCHS = 10
 
 
 def build_augmentation() -> tf.keras.Sequential:
@@ -69,12 +85,62 @@ def build_model(num_classes: int) -> tf.keras.Model:
     )(x)
 
     model = tf.keras.Model(inputs, outputs, name="rice_mobilenet_v2")
+    compile_model(model, HEAD_LEARNING_RATE)
+    return model
+
+
+def compile_model(model: tf.keras.Model, learning_rate: float) -> None:
+    """The multiclass softmax setup shared by both training phases."""
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"],
     )
-    return model
+
+
+def find_backbone(model: tf.keras.Model) -> tf.keras.Model:
+    """The pretrained MobileNetV2 inside the rice model."""
+    for layer in model.layers:
+        if layer.name.startswith("mobilenetv2"):
+            return layer
+    raise ValueError("The model has no MobileNetV2 backbone.")
+
+
+def unfreeze_top_of_backbone(model: tf.keras.Model) -> list:
+    """Phase 2: let the top of MobileNetV2 train too, at a lower learning rate.
+
+    Call this only after Phase 1 has trained the classifier head with the backbone
+    frozen. A randomly initialised head would send large gradients into the
+    pretrained layers and destroy what they learned on ImageNet.
+
+    Every layer before FINE_TUNE_FROM_LAYER stays frozen, and so does every
+    BatchNormalization layer after it. The tutorial keeps BatchNormalization in
+    inference mode by calling the backbone with training=False, as build_model does.
+    In Keras 3 that is not enough here: model.fit passes training=True down to every
+    nested layer, overriding it, and a trainable BatchNormalization layer would then
+    update its moving mean and variance on these small batches. A frozen one always
+    runs in inference mode, so its statistics stay the ImageNet ones.
+
+    Returns the names of the backbone layers whose weights now train.
+    """
+    backbone = find_backbone(model)
+    names = [layer.name for layer in backbone.layers]
+    fine_tune_at = names.index(FINE_TUNE_FROM_LAYER)
+
+    backbone.trainable = True
+    for layer in backbone.layers[:fine_tune_at]:
+        layer.trainable = False
+    for layer in backbone.layers[fine_tune_at:]:
+        if isinstance(layer, tf.keras.layers.BatchNormalization):
+            layer.trainable = False
+
+    # A change to `trainable` only takes effect once the model is compiled again.
+    compile_model(model, FINE_TUNE_LEARNING_RATE)
+    return [layer.name for layer in backbone.layers if layer.trainable_weights]
+
+
+def count_trainable_parameters(model: tf.keras.Model) -> int:
+    return int(sum(np.prod(weight.shape) for weight in model.trainable_weights))
 
 
 def build_callbacks(checkpoint_path: Path) -> list:
