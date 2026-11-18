@@ -54,7 +54,9 @@ class _ScanScreenState extends State<ScanScreen> {
       if (!_picker.supportsImageSource(source)) {
         problem = 'The camera is not available on this device. Please select an image from Gallery.';
       } else {
-        picked = await _picker.pickImage(source: source, imageQuality: 85);
+        // No imageQuality or size limit: the photo is uploaded exactly as picked,
+        // so every client sends the same bytes and only the backend preprocesses.
+        picked = await _picker.pickImage(source: source);
         if (picked == null) {
           return; // The user closed the camera or the picker.
         }
